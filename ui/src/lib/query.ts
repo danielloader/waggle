@@ -356,8 +356,6 @@ export const querySearchSchema = z.object({
   order_by: z.array(orderSchema).default([]),
   having: z.array(filterSchema).default([]),
   limit: z.number().int().min(1).max(10000).optional(),
-  // Free-text search for logs (FTS). Meaningless for the traces page.
-  q: z.string().default(""),
   // Active tab under the chart. "overview" is the cheap default — it rolls
   // the aggregation up across the time range. "traces" shows top-N slowest
   // root spans (spans dataset only). "explore" loads raw events, which is

@@ -91,6 +91,11 @@ var allTemplates = []TraceTemplate{
 		Description: "Retrying HTTP client with exponential backoff events",
 		Emit:        emitRetryingRequest,
 	},
+	{
+		Service:     "api-gateway",
+		Description: "Big checkout flow — ~23 spans across all four services (demo)",
+		Emit:        emitBigCheckoutFlow,
+	},
 }
 
 // -----------------------------------------------------------------------------
@@ -583,6 +588,198 @@ func emitNotificationSend(ctx context.Context, tracers Tracers) error {
 	)
 	sleepLike(30*time.Millisecond, 10*time.Millisecond)
 	call.End()
+	return nil
+}
+
+// emitBigCheckoutFlow produces a deep, fan-out trace that spans every
+// service and goes 3 levels deep. ~23 spans per trace — useful as the
+// demo trace for the waterfall view and for testing pagination / scroll
+// in span lists. Call structure (indent = depth):
+//
+//	POST /checkout/complete        [api-gateway]
+//	  auth.validate                [api-gateway]
+//	  cart.fetch                   [api-gateway]
+//	    db.SELECT cart             [db-worker]
+//	  inventory.check              [api-gateway]
+//	    db.SELECT inventory (×3)   [db-worker]
+//	  payments.authorize           [payments]
+//	    fraud.score                [payments]
+//	    stripe.charge              [payments]
+//	    db.INSERT payment_log      [db-worker]
+//	  order.create                 [api-gateway]
+//	    db.INSERT orders           [db-worker]
+//	    db.INSERT order_items      [db-worker]
+//	    db.UPDATE inventory        [db-worker]
+//	  notifications.dispatch       [notifications]
+//	    email.send                 [notifications]
+//	    sms.send                   [notifications]
+//	    webhook.send               [notifications]
+//	  analytics.emit               [api-gateway]
+//	    db.INSERT analytics        [db-worker]
+//	  response.serialize           [api-gateway]
+func emitBigCheckoutFlow(ctx context.Context, tracers Tracers) error {
+	api := tracers["api-gateway"]
+	pay := tracers["payments"]
+	notif := tracers["notifications"]
+	db := tracers["db-worker"]
+
+	ctx, root := api.Start(ctx, "POST /checkout/complete",
+		trace.WithSpanKind(trace.SpanKindServer))
+	root.SetAttributes(
+		attribute.String("http.request.method", "POST"),
+		attribute.String("http.route", "/checkout/complete"),
+		attribute.String("url.path", "/checkout/complete"),
+		attribute.Int("http.response.status_code", 200),
+		attribute.String("customer.tier", pickTier()),
+		attribute.String("deployment.region", pickRegion()),
+		attribute.Int("cart.item_count", 3+rand.IntN(8)),
+		attribute.String("checkout.flow", "one_click"),
+	)
+	defer root.End()
+
+	// simpleChild starts a sibling under ctx, sets a few attributes, and
+	// sleeps a short realistic duration before ending. Keeps the body below
+	// readable.
+	simpleChild := func(parentCtx context.Context, t trace.Tracer, name string, attrs []attribute.KeyValue, base, jitter time.Duration) {
+		_, s := t.Start(parentCtx, name, trace.WithSpanKind(trace.SpanKindInternal))
+		if len(attrs) > 0 {
+			s.SetAttributes(attrs...)
+		}
+		sleepLike(base, jitter)
+		s.End()
+	}
+
+	// auth.validate — flat child.
+	simpleChild(ctx, api, "auth.validate",
+		[]attribute.KeyValue{
+			attribute.String("auth.method", "jwt"),
+			attribute.Bool("auth.cached", rand.IntN(2) == 0),
+		},
+		3*time.Millisecond, 2*time.Millisecond)
+
+	// cart.fetch — one DB child under it.
+	cartCtx, cart := api.Start(ctx, "cart.fetch")
+	cart.SetAttributes(attribute.String("cart.id", fmt.Sprintf("cart_%d", rand.IntN(100_000))))
+	simpleChild(cartCtx, db, "SELECT cart_items",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "SELECT * FROM cart_items WHERE cart_id = $1"),
+			attribute.Int("db.rows_returned", 3+rand.IntN(5)),
+		},
+		4*time.Millisecond, 2*time.Millisecond)
+	cart.End()
+
+	// inventory.check — fan-out of 3 parallel-looking DB lookups.
+	invCtx, inv := api.Start(ctx, "inventory.check")
+	inv.SetAttributes(attribute.Int("inventory.line_count", 3))
+	for i := range 3 {
+		simpleChild(invCtx, db, "SELECT inventory",
+			[]attribute.KeyValue{
+				attribute.String("db.system", "postgresql"),
+				attribute.String("db.statement", "SELECT qty FROM inventory WHERE sku = $1 FOR UPDATE"),
+				attribute.Int("inventory.line.index", i),
+				attribute.Int("db.rows_returned", 1),
+			},
+			3*time.Millisecond, 1*time.Millisecond)
+	}
+	inv.End()
+
+	// payments.authorize — crosses into the payments service, then into db.
+	payCtx, payAuth := pay.Start(ctx, "PaymentService/Authorize",
+		trace.WithSpanKind(trace.SpanKindServer))
+	payAuth.SetAttributes(
+		attribute.String("rpc.system", "grpc"),
+		attribute.String("rpc.service", "PaymentService"),
+		attribute.String("rpc.method", "Authorize"),
+		attribute.String("payments.provider", pickPaymentProvider()),
+	)
+	simpleChild(payCtx, pay, "FraudService/Check",
+		[]attribute.KeyValue{
+			attribute.String("rpc.service", "FraudService"),
+			attribute.Float64("fraud.score", rand.Float64()),
+		},
+		6*time.Millisecond, 3*time.Millisecond)
+	simpleChild(payCtx, pay, "stripe.authorize",
+		[]attribute.KeyValue{
+			attribute.String("peer.service", "stripe"),
+			attribute.String("http.request.method", "POST"),
+			attribute.String("http.route", "/v1/charges"),
+			attribute.Int("http.response.status_code", 200),
+		},
+		35*time.Millisecond, 15*time.Millisecond)
+	simpleChild(payCtx, db, "INSERT payment_log",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "INSERT INTO payment_log(...) VALUES(...)"),
+		},
+		4*time.Millisecond, 2*time.Millisecond)
+	payAuth.End()
+
+	// order.create — three DB writes under a single order-create span.
+	orderCtx, order := api.Start(ctx, "order.create")
+	order.SetAttributes(attribute.String("order.id", fmt.Sprintf("o_%d", rand.IntN(1_000_000))))
+	simpleChild(orderCtx, db, "INSERT orders",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "INSERT INTO orders(...) VALUES(...)"),
+		},
+		4*time.Millisecond, 2*time.Millisecond)
+	simpleChild(orderCtx, db, "INSERT order_items",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "INSERT INTO order_items(...) VALUES(...)"),
+		},
+		5*time.Millisecond, 3*time.Millisecond)
+	simpleChild(orderCtx, db, "UPDATE inventory",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "UPDATE inventory SET qty = qty - $1 WHERE sku = $2"),
+		},
+		4*time.Millisecond, 2*time.Millisecond)
+	order.End()
+
+	// notifications.dispatch — fan out to three channels.
+	notifCtx, dispatch := notif.Start(ctx, "notifications.dispatch",
+		trace.WithSpanKind(trace.SpanKindProducer))
+	dispatch.SetAttributes(attribute.Int("notifications.channels", 3))
+	simpleChild(notifCtx, notif, "email.send",
+		[]attribute.KeyValue{
+			attribute.String("messaging.system", "sendgrid"),
+			attribute.String("messaging.operation", "send"),
+		},
+		25*time.Millisecond, 10*time.Millisecond)
+	simpleChild(notifCtx, notif, "sms.send",
+		[]attribute.KeyValue{
+			attribute.String("messaging.system", "twilio"),
+			attribute.String("messaging.operation", "send"),
+		},
+		35*time.Millisecond, 10*time.Millisecond)
+	simpleChild(notifCtx, notif, "webhook.send",
+		[]attribute.KeyValue{
+			attribute.String("peer.service", "partner-webhook"),
+			attribute.Int("http.response.status_code", 202),
+		},
+		20*time.Millisecond, 8*time.Millisecond)
+	dispatch.End()
+
+	// analytics.emit — one more db hop.
+	anCtx, analytics := api.Start(ctx, "analytics.emit")
+	analytics.SetAttributes(attribute.String("analytics.event", "checkout_completed"))
+	simpleChild(anCtx, db, "INSERT analytics_events",
+		[]attribute.KeyValue{
+			attribute.String("db.system", "postgresql"),
+			attribute.String("db.statement", "INSERT INTO analytics_events(...) VALUES(...)"),
+		},
+		3*time.Millisecond, 1*time.Millisecond)
+	analytics.End()
+
+	// response.serialize — flat child, ends the request.
+	simpleChild(ctx, api, "response.serialize",
+		[]attribute.KeyValue{
+			attribute.Int("response.body_size_bytes", 800+rand.IntN(2000)),
+		},
+		2*time.Millisecond, 1*time.Millisecond)
+
 	return nil
 }
 

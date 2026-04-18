@@ -1,5 +1,7 @@
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { Accordion } from "../components/ui/Accordion";
 import { DefinePanel } from "../features/query/DefinePanel";
 import { QueryChart } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
@@ -12,9 +14,30 @@ import {
 } from "../lib/query";
 import { tracesRoute } from "../router";
 
+// See LogsPage — same scroll-driven collapse, shared thresholds.
+const COLLAPSE_AT = 120;
+const EXPAND_AT = 20;
+
 export function TracesPage() {
   const search = tracesRoute.useSearch();
   const navigate = useNavigate();
+  const [queryOpen, setQueryOpen] = useState(true);
+  const [chartOpen, setChartOpen] = useState(true);
+
+  useEffect(() => {
+    setQueryOpen(true);
+    setChartOpen(true);
+  }, [search.tab]);
+
+  const handleExploreScrollY = (y: number) => {
+    if (y > COLLAPSE_AT) {
+      setQueryOpen((o) => (o ? false : o));
+      setChartOpen((o) => (o ? false : o));
+    } else if (y < EXPAND_AT) {
+      setQueryOpen((o) => (o ? o : true));
+      setChartOpen((o) => (o ? o : true));
+    }
+  };
 
   const setSearch = (next: QuerySearch) =>
     navigate({ to: "/traces", search: next as unknown as Record<string, unknown> });
@@ -46,34 +69,52 @@ export function TracesPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <DefinePanel
-        dataset="spans"
-        search={search}
-        onChange={setSearch}
-        onRun={() => chart.refetch()}
-        isRunning={chart.isFetching}
-      />
-      <div className="p-3" style={{ background: "var(--color-surface-muted)" }}>
-        <QueryChart
-          result={chart.data}
-          loading={chart.isPending}
-          error={chart.error}
-          bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
-          fromMs={resolved.fromMs}
-          toMs={resolved.toMs}
-          onBucketClick={handleBucketClick}
-        />
-      </div>
-      <div
-        className="flex-1 overflow-hidden border-t"
-        style={{ borderColor: "var(--color-border)" }}
+      <Accordion
+        label="Query"
+        open={queryOpen}
+        onToggle={() => setQueryOpen((o) => !o)}
+        collapsedSummary={querySummary(search)}
       >
+        <DefinePanel
+          dataset="spans"
+          search={search}
+          onChange={setSearch}
+          onRun={() => chart.refetch()}
+          isRunning={chart.isFetching}
+        />
+      </Accordion>
+      <Accordion
+        label="Chart"
+        open={chartOpen}
+        onToggle={() => setChartOpen((o) => !o)}
+      >
+        <div className="p-3" style={{ background: "var(--color-surface-muted)" }}>
+          <QueryChart
+            result={chart.data}
+            loading={chart.isPending}
+            error={chart.error}
+            bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
+            fromMs={resolved.fromMs}
+            toMs={resolved.toMs}
+            onBucketClick={handleBucketClick}
+          />
+        </div>
+      </Accordion>
+      <div className="flex-1 overflow-hidden">
         <ResultTabs
           dataset="spans"
           search={search}
           onTabChange={(tab) => setSearch({ ...search, tab })}
+          onExploreScrollY={handleExploreScrollY}
         />
       </div>
     </div>
   );
+}
+
+function querySummary(search: QuerySearch): string {
+  const parts: string[] = [];
+  if (search.where.length) parts.push(`${search.where.length} filter${search.where.length === 1 ? "" : "s"}`);
+  if (search.group_by.length) parts.push(`group by ${search.group_by.join(", ")}`);
+  return parts.join(" · ");
 }

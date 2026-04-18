@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type {
   Dataset,
-  Filter,
   QueryResult,
   QuerySearch,
 } from "../../lib/query";
@@ -13,6 +12,9 @@ import { CopyButton } from "../../components/ui/CopyButton";
 interface Props {
   dataset: Dataset;
   search: QuerySearch;
+  /** Reports the scroll container's vertical offset on every scroll event so
+   *  the page can collapse the query/chart header once the user drills in. */
+  onScrollY?: (y: number) => void;
 }
 
 /**
@@ -20,7 +22,7 @@ interface Props {
  * dataset + WHERE + time range. Backed by the same /api/query endpoint the
  * chart uses; empty SELECT switches that endpoint into raw-rows mode.
  */
-export function EventsTable({ dataset, search }: Props) {
+export function EventsTable({ dataset, search, onScrollY }: Props) {
   // The cache key includes the raw search (range preset OR from/to).
   // Resolving inside queryFn would be cleaner but TanStack needs a stable
   // key for de-dup — so we key on the raw inputs and resolve inside the
@@ -33,14 +35,9 @@ export function EventsTable({ dataset, search }: Props) {
       search.range,
       search.from,
       search.to,
-      search.q,
     ],
     queryFn: ({ signal }) => {
       const resolved = resolveSearchRange(search);
-      const filters: Filter[] = [...search.where];
-      if (dataset === "logs" && search.q.trim()) {
-        filters.push({ field: "body", op: "contains", value: search.q.trim() });
-      }
       return runQuery(
         {
           dataset,
@@ -49,7 +46,7 @@ export function EventsTable({ dataset, search }: Props) {
             to: new Date(resolved.toMs).toISOString(),
           },
           select: [], // raw-rows mode
-          where: filters,
+          where: search.where,
           limit: 500,
         },
         signal,
@@ -76,9 +73,9 @@ export function EventsTable({ dataset, search }: Props) {
   }
 
   return dataset === "spans" ? (
-    <SpansTable result={result.data!} />
+    <SpansTable result={result.data!} onScrollY={onScrollY} />
   ) : (
-    <LogsTable result={result.data!} />
+    <LogsTable result={result.data!} onScrollY={onScrollY} />
   );
 }
 
@@ -86,10 +83,19 @@ export function EventsTable({ dataset, search }: Props) {
 // Spans
 // ---------------------------------------------------------------------------
 
-function SpansTable({ result }: { result: QueryResult }) {
+function SpansTable({
+  result,
+  onScrollY,
+}: {
+  result: QueryResult;
+  onScrollY?: (y: number) => void;
+}) {
   const idx = columnIndex(result);
   return (
-    <div className="h-full overflow-auto">
+    <div
+      className="h-full overflow-auto"
+      onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
+    >
       <table className="w-full border-separate border-spacing-0 text-sm">
         <thead
           className="sticky top-0 z-10 text-left text-xs"
@@ -153,10 +159,19 @@ function SpansTable({ result }: { result: QueryResult }) {
 // Logs
 // ---------------------------------------------------------------------------
 
-function LogsTable({ result }: { result: QueryResult }) {
+function LogsTable({
+  result,
+  onScrollY,
+}: {
+  result: QueryResult;
+  onScrollY?: (y: number) => void;
+}) {
   const idx = columnIndex(result);
   return (
-    <div className="h-full overflow-auto font-mono text-xs leading-5">
+    <div
+      className="h-full overflow-auto font-mono text-xs leading-5"
+      onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
+    >
       <table className="w-full border-separate border-spacing-0">
         <thead
           className="sticky top-0 z-10 text-[10px] uppercase tracking-wide"

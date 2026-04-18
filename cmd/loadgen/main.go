@@ -28,8 +28,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -38,6 +40,7 @@ func main() {
 		endpoint       = flag.String("endpoint", "127.0.0.1:4318", "OTLP/HTTP host:port to send to")
 		insecure       = flag.Bool("insecure", true, "Use http:// instead of https://")
 		rate           = flag.Float64("rate", 5.0, "Target traces emitted per second")
+		logsRate       = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
 		jitter         = flag.Float64("jitter", 0.3, "Fraction of the inter-trace period to randomize [0.0–1.0]")
 		duration       = flag.Duration("duration", 0, "How long to run (0 = until Ctrl-C)")
 		servicesFlag   = flag.String("services", "", "Comma-separated service names to emit (default: all templates)")
@@ -57,6 +60,9 @@ func main() {
 
 	if *rate <= 0 {
 		log.Fatalf("--rate must be > 0")
+	}
+	if *logsRate < 0 {
+		log.Fatalf("--logs-rate must be >= 0")
 	}
 	if *jitter < 0 || *jitter > 1 {
 		log.Fatalf("--jitter must be in [0.0, 1.0]")
@@ -84,6 +90,29 @@ func main() {
 		}
 	}()
 
+	// Log providers, one per unique service — mirrors the tracer setup so
+	// log records carry the right service.name resource. Built across the
+	// same service set as traces so a combined run produces a coherent
+	// service catalog.
+	logTemplates := filterLogTemplates(allLogs, *servicesFlag)
+	var logProviders map[string]*sdklog.LoggerProvider
+	if *logsRate > 0 {
+		if len(logTemplates) == 0 {
+			log.Fatalf("no log templates matched --services=%q", *servicesFlag)
+		}
+		logProviders, err = buildLogProviders(logTemplates, *endpoint, *insecure)
+		if err != nil {
+			log.Fatalf("build log providers: %v", err)
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, lp := range logProviders {
+				_ = lp.Shutdown(shutdownCtx)
+			}
+		}()
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if *duration > 0 {
@@ -93,13 +122,14 @@ func main() {
 	}
 
 	period := time.Duration(float64(time.Second) / *rate)
-	log.Printf("loadgen: endpoint=%s rate=%.2f/s period=%s jitter=%.0f%% parallelism=%d templates=%d",
-		*endpoint, *rate, period, *jitter*100, *parallelism, len(templates))
+	log.Printf("loadgen: endpoint=%s rate=%.2f/s logs_rate=%.2f/s period=%s jitter=%.0f%% parallelism=%d trace_templates=%d log_templates=%d",
+		*endpoint, *rate, *logsRate, period, *jitter*100, *parallelism, len(templates), len(logTemplates))
 
 	emitted := &atomic.Int64{}
 	failed := &atomic.Int64{}
+	logsEmitted := &atomic.Int64{}
 
-	go reportThroughput(ctx, emitted, failed, *logInterval)
+	go reportThroughput(ctx, emitted, failed, logsEmitted, *logInterval)
 
 	// The rate limiter: one ticker yields "tokens" at the target rate; workers
 	// consume tokens. This decouples rate from per-trace cost (a slow template
@@ -149,10 +179,39 @@ func main() {
 		}
 	}()
 
+	// Log emitter. Independent cadence from traces — one goroutine loop is
+	// plenty because each emit is just a record append to the batch
+	// processor.
+	if *logsRate > 0 {
+		loggers := Loggers{}
+		for svc, p := range logProviders {
+			loggers[svc] = p.Logger("loadgen")
+		}
+		logPeriod := time.Duration(float64(time.Second) / *logsRate)
+		go func() {
+			for {
+				sleep := jitterDuration(logPeriod, *jitter)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(sleep):
+				}
+				tpl := logTemplates[rand.IntN(len(logTemplates))]
+				logger, ok := loggers[tpl.Service]
+				if !ok {
+					continue
+				}
+				tpl.Emit(ctx, logger)
+				logsEmitted.Add(1)
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	wg.Wait()
 
-	log.Printf("loadgen: stopped. emitted=%d failed=%d", emitted.Load(), failed.Load())
+	log.Printf("loadgen: stopped. emitted=%d failed=%d logs_emitted=%d",
+		emitted.Load(), failed.Load(), logsEmitted.Load())
 }
 
 // jitterDuration returns base scaled by a random factor in [1-jitter, 1+jitter].
@@ -166,6 +225,42 @@ func jitterDuration(base time.Duration, jitter float64) time.Duration {
 		factor = 0.05 // clamp so we don't spin
 	}
 	return time.Duration(float64(base) * factor)
+}
+
+func buildLogProviders(tpls []LogTemplate, endpoint string, insecure bool) (map[string]*sdklog.LoggerProvider, error) {
+	byService := map[string]*sdklog.LoggerProvider{}
+	services := map[string]struct{}{}
+	for _, t := range tpls {
+		services[t.Service] = struct{}{}
+	}
+
+	for service := range services {
+		opts := []otlploghttp.Option{otlploghttp.WithEndpoint(endpoint)}
+		if insecure {
+			opts = append(opts, otlploghttp.WithInsecure())
+		}
+		exp, err := otlploghttp.New(context.Background(), opts...)
+		if err != nil {
+			return nil, fmt.Errorf("log exporter for %s: %w", service, err)
+		}
+		res, err := resource.New(context.Background(), resource.WithAttributes(
+			attribute.String("service.name", service),
+			attribute.String("service.version", "loadgen-0.1.0"),
+			attribute.String("deployment.environment", "dev"),
+			attribute.String("telemetry.sdk.name", "waggle-loadgen"),
+		))
+		if err != nil {
+			return nil, fmt.Errorf("resource for %s: %w", service, err)
+		}
+		byService[service] = sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(exp,
+				sdklog.WithExportInterval(250*time.Millisecond),
+				sdklog.WithExportMaxBatchSize(256),
+			)),
+			sdklog.WithResource(res),
+		)
+	}
+	return byService, nil
 }
 
 func buildProviders(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdktrace.TracerProvider, error) {
@@ -223,13 +318,13 @@ func filterTemplates(all []TraceTemplate, services string) []TraceTemplate {
 	return out
 }
 
-func reportThroughput(ctx context.Context, emitted, failed *atomic.Int64, every time.Duration) {
+func reportThroughput(ctx context.Context, emitted, failed, logsEmitted *atomic.Int64, every time.Duration) {
 	if every <= 0 {
 		return
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
-	var lastEmitted int64
+	var lastEmitted, lastLogs int64
 	var lastTime = time.Now()
 	for {
 		select {
@@ -237,13 +332,17 @@ func reportThroughput(ctx context.Context, emitted, failed *atomic.Int64, every 
 			return
 		case now := <-t.C:
 			cur := emitted.Load()
+			curLogs := logsEmitted.Load()
 			delta := cur - lastEmitted
+			deltaLogs := curLogs - lastLogs
 			dt := now.Sub(lastTime).Seconds()
 			if dt > 0 {
-				log.Printf("loadgen: emitted=%d failed=%d rate=%.1f/s",
-					cur, failed.Load(), float64(delta)/dt)
+				log.Printf("loadgen: emitted=%d failed=%d rate=%.1f/s logs_emitted=%d logs_rate=%.1f/s",
+					cur, failed.Load(), float64(delta)/dt,
+					curLogs, float64(deltaLogs)/dt)
 			}
 			lastEmitted = cur
+			lastLogs = curLogs
 			lastTime = now
 		}
 	}
