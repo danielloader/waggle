@@ -116,8 +116,14 @@ func (s *Server) mountIngest(mux *http.ServeMux) {
 }
 
 func (s *Server) mountAPI(mux *http.ServeMux) {
+	// /api/health also echoes the listen address so the UI's sidebar
+	// footer can show the real port waggle is running on (supports the
+	// --ingest-addr / --addr overrides) instead of hardcoding ":4318".
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":          true,
+			"listen_addr": s.cfg.IngestAddr,
+		})
 	})
 	if s.apiRouter != nil {
 		s.apiRouter.Mount(mux)

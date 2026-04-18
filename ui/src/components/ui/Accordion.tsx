@@ -43,7 +43,7 @@ export function Accordion({
         onClick={onToggle}
         className={clsx(
           "w-full flex items-center gap-2 px-4 py-1 text-xs",
-          "hover:bg-[var(--color-surface-muted)]",
+          "hover:bg-[var(--color-card-hover)]",
         )}
         style={{ color: "var(--color-ink-muted)" }}
         aria-expanded={!lookCollapsed}

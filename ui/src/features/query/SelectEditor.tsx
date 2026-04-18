@@ -52,7 +52,7 @@ export function SelectEditor({ select, onChange }: Props) {
           )}
           <button
             type="button"
-            className="px-1.5 py-1 rounded hover:bg-[var(--color-surface-muted)]"
+            className="px-1.5 py-1 rounded hover:bg-[var(--color-card-hover)]"
             onClick={() => {
               const next = rows.filter((_, idx) => idx !== i);
               onChange(next);
@@ -67,7 +67,7 @@ export function SelectEditor({ select, onChange }: Props) {
       <button
         type="button"
         onClick={() => onChange([...rows, { op: "count" }])}
-        className="self-start flex items-center gap-1 px-2 py-1 rounded border text-sm text-[var(--color-ink-muted)] hover:bg-[var(--color-surface-muted)]"
+        className="self-start flex items-center gap-1 px-2 py-1 rounded border text-sm text-[var(--color-ink-muted)] hover:bg-[var(--color-card-hover)]"
         style={{
           background: "var(--color-surface)",
           borderColor: "var(--color-border)",

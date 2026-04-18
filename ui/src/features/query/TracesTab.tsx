@@ -65,7 +65,7 @@ export function TracesTab({ search }: Props) {
         <thead
           className="sticky top-0 z-10 text-left text-xs"
           style={{
-            background: "var(--color-surface)",
+            background: "var(--color-card)",
             color: "var(--color-ink-muted)",
           }}
         >

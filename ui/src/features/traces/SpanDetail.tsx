@@ -157,25 +157,11 @@ function Header({ span }: { span: SpanOut }) {
       </div>
       <div className="text-base font-semibold truncate">{span.name}</div>
       <div
-        className="text-xs flex flex-wrap items-center gap-x-4 gap-y-1"
+        className="text-xs flex flex-wrap items-center gap-x-3 gap-y-1"
         style={{ color: "var(--color-ink-muted)" }}
       >
         <span>{formatDuration(span.duration_ns)}</span>
-        <span className="capitalize">
-          status:{" "}
-          <span
-            style={{
-              color:
-                status === "error"
-                  ? "var(--color-error)"
-                  : status === "ok"
-                    ? "var(--color-ok)"
-                    : undefined,
-            }}
-          >
-            {status}
-          </span>
-        </span>
+        <StatusPill status={status} />
         {span.status_message && (
           <span
             className="italic truncate max-w-[260px]"
@@ -203,6 +189,30 @@ function Header({ span }: { span: SpanOut }) {
         )}
       </div>
     </div>
+  );
+}
+
+// StatusPill — colour-codes the span status with a subtle tinted
+// background and a small dot. Mirrors the hover-legible treatment the
+// waterfall uses for error rows, so status reads at a glance.
+function StatusPill({ status }: { status: string }) {
+  const tone =
+    status === "error"
+      ? { color: "var(--color-error)", bg: "color-mix(in srgb, var(--color-error) 12%, transparent)" }
+      : status === "ok"
+        ? { color: "var(--color-ok)", bg: "color-mix(in srgb, var(--color-ok) 12%, transparent)" }
+        : { color: "var(--color-ink-muted)", bg: "var(--color-card)" };
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] capitalize"
+      style={{ color: tone.color, background: tone.bg }}
+    >
+      <span
+        className="w-1.5 h-1.5 rounded-full"
+        style={{ background: tone.color }}
+      />
+      {status}
+    </span>
   );
 }
 
@@ -262,7 +272,7 @@ function EventsTab({
           key={i}
           type="button"
           onClick={() => setIdx(i)}
-          className="text-left border rounded overflow-hidden hover:bg-[var(--color-surface-muted)]"
+          className="text-left border rounded overflow-hidden hover:bg-[var(--color-card-hover)]"
           style={{
             borderColor: "var(--color-border)",
             background: "var(--color-surface)",
@@ -330,7 +340,7 @@ function EventDetail({
         <button
           type="button"
           onClick={onBack}
-          className="mt-0.5 p-1 rounded hover:bg-[var(--color-surface-muted)]"
+          className="mt-0.5 p-1 rounded hover:bg-[var(--color-card-hover)]"
           title="Back to events list"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -410,7 +420,7 @@ function LinksTab({ span }: { span: SpanOut }) {
             <Link
               to="/traces/$traceId"
               params={{ traceId: ln.linked_trace_id.toLowerCase() }}
-              className="flex items-center gap-2 px-3 py-2 border-b text-sm hover:bg-[var(--color-surface-muted)]"
+              className="flex items-center gap-2 px-3 py-2 border-b text-sm hover:bg-[var(--color-card-hover)]"
               style={{ borderColor: "var(--color-border)" }}
             >
               <ExternalLink className="w-3.5 h-3.5" style={{ color: "var(--color-accent)" }} />

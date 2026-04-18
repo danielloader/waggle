@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { Activity, ScrollText, PanelLeftClose, PanelLeft } from "lucide-react";
 import clsx from "clsx";
 
 const STORAGE_KEY = "waggle.sidebar.collapsed";
+
+interface HealthResponse {
+  ok: boolean;
+  listen_addr?: string;
+}
 
 export function RootLayout() {
   const { pathname } = useLocation();
@@ -15,6 +21,26 @@ export function RootLayout() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
+
+  // Health probe — reads back the server's real listen address so the
+  // footer doesn't lie when waggle runs on a non-default --addr.
+  const health = useQuery<HealthResponse>({
+    queryKey: ["health"],
+    queryFn: async () => {
+      const res = await fetch("/api/health");
+      if (!res.ok) throw new Error(String(res.status));
+      return (await res.json()) as HealthResponse;
+    },
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  // addressPort extracts "[::]:4318" → ":4318" so the footer renders as
+  // a short port tag rather than repeating "127.0.0.1".
+  const addressPort = (() => {
+    const addr = health.data?.listen_addr ?? "";
+    const colon = addr.lastIndexOf(":");
+    return colon >= 0 ? addr.slice(colon) : addr;
+  })();
 
   const navItem = (
     to: string,
@@ -46,7 +72,7 @@ export function RootLayout() {
           collapsed ? "w-14" : "w-56",
         )}
         style={{
-          background: "var(--color-surface)",
+          background: "var(--color-card)",
           borderColor: "var(--color-border)",
         }}
       >
@@ -57,7 +83,12 @@ export function RootLayout() {
           )}
           style={{ borderColor: "var(--color-border)" }}
         >
-          {!collapsed && <span className="font-semibold">waggle</span>}
+          {!collapsed && (
+            <span className="flex items-center gap-1.5 font-semibold">
+              <img src="/favicon.svg" alt="" className="w-4 h-4" />
+              waggle
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setCollapsed((v) => !v)}
@@ -76,17 +107,37 @@ export function RootLayout() {
           {navItem("/traces", "Traces", <Activity />, pathname.startsWith("/traces"))}
           {navItem("/logs", "Logs", <ScrollText />, pathname.startsWith("/logs"))}
         </nav>
-        {!collapsed && (
-          <div
-            className="p-3 text-xs border-t"
+        <div
+          className={clsx(
+            "text-xs border-t flex items-center",
+            collapsed ? "justify-center px-2 py-2" : "gap-2 px-3 py-2.5",
+          )}
+          style={{
+            color: "var(--color-ink-muted)",
+            borderColor: "var(--color-border)",
+          }}
+          title={
+            health.isError
+              ? "Waggle isn't responding"
+              : `Waggle is listening on ${health.data?.listen_addr ?? ""} for OTLP/HTTP`
+          }
+        >
+          <span
+            className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
             style={{
-              color: "var(--color-ink-muted)",
-              borderColor: "var(--color-border)",
+              background: health.isError
+                ? "var(--color-error)"
+                : "var(--color-ok)",
             }}
-          >
-            Listening on :4318 for OTLP/HTTP
-          </div>
-        )}
+          />
+          {!collapsed && (
+            <span className="truncate">
+              {health.isError
+                ? "offline"
+                : `OTLP/HTTP on ${addressPort || "…"}`}
+            </span>
+          )}
+        </div>
       </aside>
       <main className="flex-1 overflow-auto min-w-0">
         <Outlet />

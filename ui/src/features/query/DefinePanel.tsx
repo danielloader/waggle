@@ -51,7 +51,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
   return (
     <div
       className="sticky top-0 z-20 border-b"
-      style={{ background: "var(--color-surface-muted)", borderColor: "var(--color-border)" }}
+      style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
     >
       {/* Title row */}
       <div className="flex items-center justify-between px-4 pt-3 pb-1 gap-3">
@@ -59,7 +59,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           <h1 className="text-lg font-semibold">Query in</h1>
           <span
             className="px-2 py-0.5 rounded border text-sm font-medium"
-            style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+            style={{ background: "var(--color-card)", borderColor: "var(--color-border)" }}
           >
             {datasetLabel}
           </span>
@@ -75,22 +75,30 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
         />
       </div>
 
-      {/* Define panel */}
+      {/* Define panel — shadowed card, no outline border; the accordion
+          header already names it "QUERY", so no inner sub-header. The
+          Run button is tucked against the top-right so it's always the
+          same fixed target regardless of cell content. */}
       <div
-        className="mx-4 mb-3 rounded-md border"
-        style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+        className="mx-4 mb-3 rounded-md relative"
+        style={{
+          background: "var(--color-card)",
+          boxShadow: "var(--shadow-card)",
+        }}
       >
-        <div
-          className="px-5 py-2 border-b text-sm font-medium"
-          style={{ borderColor: "var(--color-border)" }}
+        <button
+          type="button"
+          onClick={onRun}
+          className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-white z-10"
+          style={{ background: "var(--color-accent)" }}
         >
-          Define
-        </div>
+          {isRunning ? <RotateCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run
+        </button>
 
-        {/* Row 1 */}
         <div
-          className="grid grid-cols-3 gap-6 px-5 py-1 border-b"
-          style={{ borderColor: "var(--color-border)" }}
+          className="grid grid-cols-3 gap-4 px-5 border-b"
+          style={{ borderColor: "var(--color-border-subtle)" }}
         >
           <DefineCell
             label="Select"
@@ -136,8 +144,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
         </div>
 
-        {/* Row 2 */}
-        <div className="grid grid-cols-3 gap-6 px-5 py-1 items-end">
+        <div className="grid grid-cols-3 gap-4 px-5">
           <DefineCell
             label="Order by"
             description="Sort the result rows. Reference an aggregation alias (count, p95_duration_ns, …) or a Group by field. Pair with Limit to get top-N."
@@ -168,30 +175,19 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
               />
             }
           />
-          <div className="flex items-end justify-between gap-3">
-            <DefineCell
-              label="Limit"
-              description="Maximum number of result rows returned. Defaults to 1000. Combine with Order by to keep the top-N slowest / noisiest / busiest and drop the rest."
-              isEmpty={search.limit === undefined}
-              placeholder="1000"
-              value={String(search.limit ?? "1000")}
-              editor={
-                <LimitEditor
-                  limit={search.limit}
-                  onChange={(limit) => onChange({ ...search, limit })}
-                />
-              }
-            />
-            <button
-              type="button"
-              onClick={onRun}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-white mb-2"
-              style={{ background: "var(--color-accent)" }}
-            >
-              {isRunning ? <RotateCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-              Run
-            </button>
-          </div>
+          <DefineCell
+            label="Limit"
+            description="Maximum number of result rows returned. Defaults to 1000. Combine with Order by to keep the top-N slowest / noisiest / busiest and drop the rest."
+            isEmpty={search.limit === undefined}
+            placeholder="1000"
+            value={String(search.limit ?? "1000")}
+            editor={
+              <LimitEditor
+                limit={search.limit}
+                onChange={(limit) => onChange({ ...search, limit })}
+              />
+            }
+          />
         </div>
       </div>
     </div>

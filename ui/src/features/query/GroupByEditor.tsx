@@ -52,7 +52,7 @@ export function GroupByEditor({ dataset, service, groupBy, onChange }: Props) {
             <span className="px-2 py-0.5 font-mono">{g}</span>
             <button
               type="button"
-              className="px-1.5 py-0.5 hover:bg-[var(--color-surface-muted)]"
+              className="px-1.5 py-0.5 hover:bg-[var(--color-card-hover)]"
               onClick={() => onChange(groupBy.filter((x) => x !== g))}
             >
               <X className="w-3.5 h-3.5" />
@@ -78,7 +78,7 @@ export function GroupByEditor({ dataset, service, groupBy, onChange }: Props) {
             key={f.key}
             type="button"
             onClick={() => onChange([...groupBy, f.key])}
-            className="flex items-center justify-between w-full px-2 py-1 text-left text-sm rounded hover:bg-[var(--color-surface-muted)]"
+            className="flex items-center justify-between w-full px-2 py-1 text-left text-sm rounded hover:bg-[var(--color-card-hover)]"
           >
             <span className="font-mono truncate">{f.key}</span>
             <span className="text-xs" style={{ color: "var(--color-ink-muted)" }}>

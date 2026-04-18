@@ -103,7 +103,7 @@ export function AttributesPanel({
                   <button
                     type="button"
                     onClick={() => applyFilter(r)}
-                    className="ml-auto opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:bg-[var(--color-surface-muted)]"
+                    className="ml-auto opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:bg-[var(--color-card-hover)]"
                     title={`Filter ${filterTarget} to ${r.key} = ${String(r.value)}`}
                   >
                     <FilterIcon
