@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Accordion } from "../components/ui/Accordion";
@@ -14,29 +14,42 @@ import {
 } from "../lib/query";
 import { tracesRoute } from "../router";
 
-// See LogsPage — same scroll-driven collapse, shared thresholds.
-const COLLAPSE_AT = 120;
-const EXPAND_AT = 20;
+// See LogsPage — scroll distance over which the accordions collapse.
+const COLLAPSE_DISTANCE = 220;
 
 export function TracesPage() {
   const search = tracesRoute.useSearch();
   const navigate = useNavigate();
   const [queryOpen, setQueryOpen] = useState(true);
   const [chartOpen, setChartOpen] = useState(true);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     setQueryOpen(true);
     setChartOpen(true);
+    setScrollProgress(0);
   }, [search.tab]);
 
+  useEffect(
+    () => () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    },
+    [],
+  );
+
   const handleExploreScrollY = (y: number) => {
-    if (y > COLLAPSE_AT) {
-      setQueryOpen((o) => (o ? false : o));
-      setChartOpen((o) => (o ? false : o));
-    } else if (y < EXPAND_AT) {
-      setQueryOpen((o) => (o ? o : true));
-      setChartOpen((o) => (o ? o : true));
-    }
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const p = Math.max(0, Math.min(1, y / COLLAPSE_DISTANCE));
+      setScrollProgress((prev) => (prev === p ? prev : p));
+    });
+  };
+
+  const reopen = (set: (v: boolean) => void) => {
+    setScrollProgress(0);
+    set(true);
   };
 
   const setSearch = (next: QuerySearch) =>
@@ -72,7 +85,8 @@ export function TracesPage() {
       <Accordion
         label="Query"
         open={queryOpen}
-        onToggle={() => setQueryOpen((o) => !o)}
+        collapseProgress={scrollProgress}
+        onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
         collapsedSummary={querySummary(search)}
       >
         <DefinePanel

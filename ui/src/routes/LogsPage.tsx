@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Accordion } from "../components/ui/Accordion";
@@ -14,37 +14,59 @@ import {
 } from "../lib/query";
 import { logsRoute } from "../router";
 
-// Hysteresis thresholds for the scroll-driven accordion collapse. Collapse
-// once the user is clearly scrolling (>120px); expand only when they're
-// back near the top (<20px). The gap keeps the accordions from flickering
-// when you hover around the trigger point.
-const COLLAPSE_AT = 120;
-const EXPAND_AT = 20;
+// Scroll distance (in Explore-Data pixels) over which the query/chart
+// accordions collapse linearly from fully open to fully closed. Shorter
+// → more aggressive; longer → gentler.
+const COLLAPSE_DISTANCE = 220;
 
 export function LogsPage() {
   const search = logsRoute.useSearch();
   const navigate = useNavigate();
-  // Two accordions: the query builder and the chart. Both default open;
-  // either the user clicks to toggle, or scrolling Explore Data past the
-  // threshold collapses both, and scrolling back to the top reopens them.
+  // Two accordions: the query builder and the chart. Both default open.
+  // Click toggles the manual open/closed state; the scroll-driven progress
+  // below multiplies the effective openness when open, so a user who's
+  // scrolled halfway sees the accordion at half height.
   const [queryOpen, setQueryOpen] = useState(true);
   const [chartOpen, setChartOpen] = useState(true);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const rafRef = useRef<number | null>(null);
 
   // Reset on tab change — Explore is the only tab whose scroll drives the
-  // collapse, so switching away should restore both accordions.
+  // collapse, so switching away should restore both accordions and drop
+  // any in-flight progress.
   useEffect(() => {
     setQueryOpen(true);
     setChartOpen(true);
+    setScrollProgress(0);
   }, [search.tab]);
 
+  // Clean up any queued rAF on unmount.
+  useEffect(
+    () => () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    },
+    [],
+  );
+
   const handleExploreScrollY = (y: number) => {
-    if (y > COLLAPSE_AT) {
-      setQueryOpen((o) => (o ? false : o));
-      setChartOpen((o) => (o ? false : o));
-    } else if (y < EXPAND_AT) {
-      setQueryOpen((o) => (o ? o : true));
-      setChartOpen((o) => (o ? o : true));
-    }
+    // Coalesce rapid scroll events into at most one setState per frame —
+    // otherwise a single physical scroll fires ~10 setStates and thrashes
+    // the React tree unnecessarily.
+    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const p = Math.max(0, Math.min(1, y / COLLAPSE_DISTANCE));
+      setScrollProgress((prev) => (prev === p ? prev : p));
+    });
+  };
+
+  const reopen = (set: (v: boolean) => void) => {
+    // Clicking to open a scroll-collapsed accordion is useless if scroll
+    // progress stays at 1 — the multiplier would pin openness at 0. Reset
+    // progress so the click actually reveals content; the next real scroll
+    // event will re-collapse proportionally.
+    setScrollProgress(0);
+    set(true);
   };
 
   const setSearch = (next: QuerySearch) =>
@@ -79,7 +101,8 @@ export function LogsPage() {
       <Accordion
         label="Query"
         open={queryOpen}
-        onToggle={() => setQueryOpen((o) => !o)}
+        collapseProgress={scrollProgress}
+        onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
         collapsedSummary={querySummary(search)}
       >
         <DefinePanel
