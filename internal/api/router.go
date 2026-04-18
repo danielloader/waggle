@@ -30,6 +30,8 @@ func (rt *Router) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/fields/{key}/values", rt.listFieldValues)
 	mux.HandleFunc("GET /api/span-names", rt.listSpanNames)
 	mux.HandleFunc("GET /api/logs/search", rt.searchLogs)
+	mux.HandleFunc("GET /api/metrics", rt.listMetrics)
+	mux.HandleFunc("GET /api/metrics/{name}/series", rt.listMetricSeries)
 	mux.HandleFunc("POST /api/query", rt.runQuery)
 	mux.HandleFunc("POST /api/clear", rt.clear)
 }
@@ -202,6 +204,34 @@ func (rt *Router) clear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (rt *Router) listMetrics(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	metrics, err := rt.store.ListMetrics(r.Context(), store.MetricFilter{
+		Service: q.Get("service"),
+		Prefix:  q.Get("prefix"),
+		Limit:   parseInt(q.Get("limit"), 200),
+	})
+	if err != nil {
+		rt.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"metrics": metrics})
+}
+
+func (rt *Router) listMetricSeries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	series, err := rt.store.ListMetricSeries(r.Context(), store.MetricSeriesFilter{
+		Name:    r.PathValue("name"),
+		Service: q.Get("service"),
+		Limit:   parseInt(q.Get("limit"), 200),
+	})
+	if err != nil {
+		rt.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"series": series})
 }
 
 func (rt *Router) writeError(w http.ResponseWriter, err error) {

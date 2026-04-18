@@ -56,7 +56,7 @@ func (b *builder) buildRaw() (Compiled, error) {
 	sql.WriteString("SELECT ")
 	sql.WriteString(strings.Join(b.selects, ", "))
 	sql.WriteString(" FROM ")
-	sql.WriteString(string(b.q.Dataset))
+	sql.WriteString(b.datasetFromClause())
 	sql.WriteString(" WHERE ")
 	sql.WriteString(strings.Join(whereParts, " AND "))
 
@@ -97,6 +97,24 @@ func (b *builder) buildRaw() (Compiled, error) {
 // positional output into typed rows.
 func rawColumnsFor(d Dataset) ([]Column, []string) {
 	switch d {
+	case DatasetMetrics:
+		cols := []Column{
+			{Name: "time_ns", Type: "time"},
+			{Name: "service_name", Type: "string"},
+			{Name: "name", Type: "string"},
+			{Name: "kind", Type: "string"},
+			{Name: "value", Type: "float"},
+			{Name: "attributes", Type: "string"},
+		}
+		exprs := []string{
+			"p.time_ns",
+			"s.service_name",
+			"s.name",
+			"s.kind",
+			"p.value",
+			"s.attributes",
+		}
+		return cols, exprs
 	case DatasetLogs:
 		cols := []Column{
 			{Name: "time_ns", Type: "time"},
@@ -270,7 +288,7 @@ func (b *builder) build() (Compiled, error) {
 	sql.WriteString("SELECT ")
 	sql.WriteString(strings.Join(b.selects, ", "))
 	sql.WriteString(" FROM ")
-	sql.WriteString(string(b.q.Dataset))
+	sql.WriteString(b.datasetFromClause())
 	sql.WriteString(" WHERE ")
 	sql.WriteString(strings.Join(whereParts, " AND "))
 
@@ -354,7 +372,7 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 	// the path; use a literal to keep the expression deterministic.
 	path := fmt.Sprintf(`'$."%s"'`, name)
 	return resolvedField{
-		SQL:  fmt.Sprintf("json_extract(attributes, %s)", path),
+		SQL:  fmt.Sprintf("json_extract(%s, %s)", b.attributesColumn(), path),
 		Type: "string",
 	}, nil
 }
@@ -431,15 +449,67 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 			// ≥ 17 per OTel log data model).
 			return resolvedField{SQL: "(severity_number >= 17)", Type: "bool"}, true
 		}
+	case DatasetMetrics:
+		// Metric queries join metric_points (p) to metric_series (s);
+		// point-level fields live on p, series-level facets on s.
+		switch name {
+		case "name":
+			return resolvedField{SQL: "s.name", Type: "string"}, true
+		case "service.name":
+			return resolvedField{SQL: "s.service_name", Type: "string"}, true
+		case "kind":
+			return resolvedField{SQL: "s.kind", Type: "string"}, true
+		case "unit":
+			return resolvedField{SQL: "s.unit", Type: "string"}, true
+		case "temporality":
+			return resolvedField{SQL: "s.temporality", Type: "string"}, true
+		case "value":
+			return resolvedField{SQL: "p.value", Type: "float"}, true
+		case "time_ns":
+			return resolvedField{SQL: "p.time_ns", Type: "time"}, true
+		case "start_time_ns":
+			return resolvedField{SQL: "p.start_time_ns", Type: "time"}, true
+		case "series_id":
+			return resolvedField{SQL: "p.series_id", Type: "int"}, true
+		}
 	}
 	return resolvedField{}, false
 }
 
 func (b *builder) datasetTimeColumn() string {
-	if b.q.Dataset == DatasetLogs {
+	switch b.q.Dataset {
+	case DatasetLogs:
 		return "time_ns"
+	case DatasetMetrics:
+		// Points live on metric_points; attributes on metric_series (see
+		// datasetFromClause). Time qualifier matches the aliased point
+		// table so the planner picks idx_metric_points_time.
+		return "p.time_ns"
 	}
 	return "start_time_ns"
+}
+
+// datasetFromClause returns the table expression for the FROM clause.
+// Spans + logs are single-table; metrics JOIN points to series so the
+// same attribute-key autocomplete and series-metadata columns resolve
+// like any other field.
+func (b *builder) datasetFromClause() string {
+	switch b.q.Dataset {
+	case DatasetMetrics:
+		return "metric_points p JOIN metric_series s ON s.series_id = p.series_id"
+	default:
+		return string(b.q.Dataset)
+	}
+}
+
+// attributesColumn is the SQL expression used as the first argument to
+// json_extract for attribute-key fallbacks. For metrics the attributes
+// live on the series, not the point, so the qualified alias is needed.
+func (b *builder) attributesColumn() string {
+	if b.q.Dataset == DatasetMetrics {
+		return "s.attributes"
+	}
+	return "attributes"
 }
 
 func (b *builder) aggregation(a Aggregation) (string, string, error) {

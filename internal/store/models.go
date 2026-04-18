@@ -231,6 +231,28 @@ type FieldInfo struct {
 	Count     int64  `json:"count"`
 }
 
+// MetricSummary is a row in the metric-name picker.
+type MetricSummary struct {
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	Unit        string `json:"unit,omitempty"`
+	Description string `json:"description,omitempty"`
+	SeriesCount int64  `json:"series_count"`
+}
+
+// MetricSeriesSummary is one row in the series list for a given metric.
+type MetricSeriesSummary struct {
+	SeriesID       int64  `json:"series_id"`
+	ServiceName    string `json:"service_name"`
+	Name           string `json:"name"`
+	Kind           string `json:"kind"`
+	Unit           string `json:"unit,omitempty"`
+	Temporality    string `json:"temporality,omitempty"`
+	AttributesJSON string `json:"attributes"`
+	FirstSeenNS    int64  `json:"first_seen_ns"`
+	LastSeenNS     int64  `json:"last_seen_ns"`
+}
+
 // QueryColumn is the output of one select/group-by expression.
 type QueryColumn struct {
 	Name string `json:"name"`
