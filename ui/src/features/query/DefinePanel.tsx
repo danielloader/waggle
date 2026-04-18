@@ -94,6 +94,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
         >
           <DefineCell
             label="Select"
+            description="What to compute. COUNT returns one number per result row; aggregations like P95, AVG, SUM, MIN/MAX, and COUNT_DISTINCT take a field and reduce its values. An empty Select returns raw events instead."
             isEmpty={false}
             value={summarizeSelect(search.select)}
             editor={
@@ -105,6 +106,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
           <DefineCell
             label="Where"
+            description="Row-level filter applied BEFORE aggregation. Events that don't match are dropped, so they won't be counted or included in percentiles. Filter on first-class fields (service.name, http.route) or any attribute key."
             isEmpty={search.where.length === 0}
             placeholder="None; include all events"
             value={summarizeFilters(search.where, "None; include all events")}
@@ -119,6 +121,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
           <DefineCell
             label="Group by"
+            description="Split results into one row per unique value of the chosen field(s) — each aggregation in Select is computed separately for each group. Example: group by service.name + aggregate P95(duration_ns) → one p95 per service."
             isEmpty={search.group_by.length === 0}
             placeholder="None; don't segment"
             value={summarizeGroupBy(search.group_by)}
@@ -137,6 +140,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
         <div className="grid grid-cols-3 gap-6 px-5 py-1 items-end">
           <DefineCell
             label="Order by"
+            description="Sort the result rows. Reference an aggregation alias (count, p95_duration_ns, …) or a Group by field. Pair with Limit to get top-N."
             isEmpty={search.order_by.length === 0}
             placeholder="None"
             value={summarizeOrderBy(search.order_by)}
@@ -150,6 +154,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
           <DefineCell
             label="Having"
+            description="Group-level filter applied AFTER aggregation. Use it to keep only groups whose computed value matches, e.g. count > 100 or p95_duration_ns > 500000000. Where can't do this because it filters events before they're grouped."
             isEmpty={search.having.length === 0}
             placeholder="None; include all results"
             value={summarizeFilters(search.having, "None; include all results")}
@@ -166,6 +171,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           <div className="flex items-end justify-between gap-3">
             <DefineCell
               label="Limit"
+              description="Maximum number of result rows returned. Defaults to 1000. Combine with Order by to keep the top-N slowest / noisiest / busiest and drop the rest."
               isEmpty={search.limit === undefined}
               placeholder="1000"
               value={String(search.limit ?? "1000")}
