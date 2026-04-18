@@ -77,7 +77,7 @@ kos:
       org.opencontainers.image.source: https://github.com/danielloader/waggle
       org.opencontainers.image.title: waggle
       org.opencontainers.image.description: Local OpenTelemetry viewer — OTLP/HTTP ingest into SQLite + Honeycomb-style UI
-      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.licenses: GPL-3.0-only
     annotations:
       org.opencontainers.image.source: https://github.com/danielloader/waggle
 
