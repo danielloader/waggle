@@ -7,7 +7,7 @@ import type {
   QueryResult,
   QuerySearch,
 } from "../../lib/query";
-import { resolveSearchRange, runQuery } from "../../lib/query";
+import { refreshIntervalMs, resolveSearchRange, runQuery } from "../../lib/query";
 import { formatDuration } from "../../lib/format";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { AttributesPanel } from "../../components/ui/AttributesPanel";
@@ -55,7 +55,7 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
         signal,
       );
     },
-    refetchInterval: 10_000,
+    refetchInterval: refreshIntervalMs(search.refresh),
   });
 
   if (result.isPending) return <Centered>Loading…</Centered>;

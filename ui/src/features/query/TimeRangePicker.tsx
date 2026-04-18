@@ -1,13 +1,16 @@
-import { Clock } from "lucide-react";
+import { Clock, RefreshCw } from "lucide-react";
 import {
   allowedGranularities,
   clampGranularity,
   granularityLabel,
+  REFRESH_RATES,
+  refreshRateLabel,
   resolveSearchRange,
   TIME_RANGES,
   timeRangeLabel,
   type Granularity,
   type QuerySearch,
+  type RefreshRate,
   type TimeRangeKey,
 } from "../../lib/query";
 import { Popover } from "../../components/ui/Popover";
@@ -59,6 +62,19 @@ export function TimeRangePicker({ search, onChange }: Props) {
               · {granularityLabel(search.granularity)}
             </span>
           )}
+          {search.refresh !== "off" && (
+            <span
+              className="flex items-center gap-1 text-[10px] uppercase tracking-wide px-1 rounded"
+              style={{
+                background: "var(--color-accent)",
+                color: "#fff",
+              }}
+              title={`Auto-refreshing every ${refreshRateLabel(search.refresh)}`}
+            >
+              <RefreshCw className="w-2.5 h-2.5" />
+              {refreshRateLabel(search.refresh)}
+            </span>
+          )}
         </button>
       }
     >
@@ -86,6 +102,36 @@ export function TimeRangePicker({ search, onChange }: Props) {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <div
+              className="text-[11px] uppercase tracking-wide mb-1"
+              style={{ color: "var(--color-ink-muted)" }}
+            >
+              Auto-refresh
+            </div>
+            <select
+              className="w-full px-2 py-1.5 rounded border text-sm"
+              style={{ borderColor: "var(--color-border)" }}
+              value={search.refresh}
+              onChange={(e) =>
+                onChange({ refresh: e.target.value as RefreshRate })
+              }
+            >
+              {REFRESH_RATES.map((r) => (
+                <option key={r} value={r}>
+                  {refreshRateLabel(r)}
+                </option>
+              ))}
+            </select>
+            <div
+              className="mt-1 text-[11px]"
+              style={{ color: "var(--color-ink-muted)" }}
+            >
+              Re-runs chart + events queries on this cadence. On a preset
+              range, slides the window forward each tick.
+            </div>
           </div>
 
           <div>

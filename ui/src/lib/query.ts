@@ -116,6 +116,33 @@ export interface QueryResult {
 export const TIME_RANGES = ["15m", "1h", "6h", "24h", "7d"] as const;
 export type TimeRangeKey = (typeof TIME_RANGES)[number];
 
+// Auto-refresh cadences exposed in the time-range picker. "off" disables
+// the interval entirely; the numeric ones drive the chart + events query
+// refetchInterval.
+export const REFRESH_RATES = ["off", "5s", "10s", "30s", "1m", "5m"] as const;
+export type RefreshRate = (typeof REFRESH_RATES)[number];
+
+export function refreshIntervalMs(r: RefreshRate): number | false {
+  switch (r) {
+    case "off":
+      return false;
+    case "5s":
+      return 5_000;
+    case "10s":
+      return 10_000;
+    case "30s":
+      return 30_000;
+    case "1m":
+      return 60_000;
+    case "5m":
+      return 5 * 60_000;
+  }
+}
+
+export function refreshRateLabel(r: RefreshRate): string {
+  return r === "off" ? "Off" : r;
+}
+
 export function timeRangeLabel(r: TimeRangeKey): string {
   switch (r) {
     case "15m":
@@ -361,6 +388,11 @@ export const querySearchSchema = z.object({
   // root spans (spans dataset only). "explore" loads raw events, which is
   // deliberately lazy because it's the heavier query.
   tab: z.enum(["overview", "traces", "explore"]).default("overview"),
+  // Auto-refresh cadence for chart + events queries. Off by default so
+  // loaded URLs don't re-hit the backend unexpectedly — users opt in via
+  // the time-range picker when they want live behaviour. For a preset
+  // range like "1h" this effectively slides the window on each refetch.
+  refresh: z.enum(REFRESH_RATES).default("off"),
 });
 
 export type QuerySearch = z.infer<typeof querySearchSchema>;

@@ -8,6 +8,7 @@ import { ResultTabs } from "../features/query/ResultTabs";
 import {
   bucketMsFor,
   buildCountQuery,
+  refreshIntervalMs,
   resolveSearchRange,
   runQuery,
   type QuerySearch,
@@ -58,7 +59,7 @@ export function TracesPage() {
   const chart = useQuery({
     queryKey: ["query", "spans", search],
     queryFn: ({ signal }) => runQuery(buildCountQuery("spans", search), signal),
-    refetchInterval: 10_000,
+    refetchInterval: refreshIntervalMs(search.refresh),
   });
 
   // Click a chart bucket → ZOOM the time window to that bucket and jump to
