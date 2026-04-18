@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
   Dataset,
   QueryResult,
@@ -8,6 +10,7 @@ import type {
 import { resolveSearchRange, runQuery } from "../../lib/query";
 import { formatDuration } from "../../lib/format";
 import { CopyButton } from "../../components/ui/CopyButton";
+import { AttributesPanel } from "../../components/ui/AttributesPanel";
 
 interface Props {
   dataset: Dataset;
@@ -167,6 +170,17 @@ function LogsTable({
   onScrollY?: (y: number) => void;
 }) {
   const idx = columnIndex(result);
+  // Track which rows the user has expanded. Keyed by row index into the
+  // current result set — swapping datasets or re-running the query
+  // remounts the component so we don't need a stable row key.
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const toggle = (i: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+
   return (
     <div
       className="h-full overflow-auto font-mono text-xs leading-5"
@@ -178,6 +192,7 @@ function LogsTable({
           style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
         >
           <tr>
+            <Th>{/* chevron column */}</Th>
             <Th>Time</Th>
             <Th>Severity</Th>
             <Th>Body</Th>
@@ -191,38 +206,101 @@ function LogsTable({
             const severityNum = Number(row[idx.severity_number] ?? 0);
             const body = String(row[idx.body] ?? "");
             const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
+            const attributes = String(row[idx.attributes] ?? "{}");
+            const isOpen = expanded.has(i);
             return (
-              <tr key={i} className="align-top">
-                <Td muted className="whitespace-nowrap">
-                  {formatWall(timeNS)}
-                </Td>
-                <Td style={{ color: severityColor(severityNum) }}>
-                  {severityText || severityName(severityNum)}
-                </Td>
-                <Td className="whitespace-pre-wrap break-all">{body}</Td>
-                <Td>
-                  {traceID ? (
-                    <span className="inline-flex items-center gap-1">
-                      <Link
-                        to="/traces/$traceId"
-                        params={{ traceId: traceID }}
-                        className="underline"
-                        style={{ color: "var(--color-accent)" }}
-                      >
-                        {traceID.slice(0, 8)}
-                      </Link>
-                      <CopyButton value={traceID} label="Copy trace ID" />
-                    </span>
-                  ) : (
-                    <span style={{ color: "var(--color-ink-muted)" }}>·</span>
-                  )}
-                </Td>
-              </tr>
+              <FragmentRow
+                key={i}
+                isOpen={isOpen}
+                onToggle={() => toggle(i)}
+                time={formatWall(timeNS)}
+                severityText={severityText || severityName(severityNum)}
+                severityColor={severityColor(severityNum)}
+                body={body}
+                traceID={traceID}
+                attributesJson={attributes}
+              />
             );
           })}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function FragmentRow({
+  isOpen,
+  onToggle,
+  time,
+  severityText,
+  severityColor,
+  body,
+  traceID,
+  attributesJson,
+}: {
+  isOpen: boolean;
+  onToggle: () => void;
+  time: string;
+  severityText: string;
+  severityColor: string;
+  body: string;
+  traceID: string;
+  attributesJson: string;
+}) {
+  return (
+    <>
+      <tr
+        className="align-top cursor-pointer hover:bg-[var(--color-surface-muted)]"
+        onClick={onToggle}
+      >
+        <Td className="w-6">
+          {isOpen ? (
+            <ChevronDown className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5" />
+          )}
+        </Td>
+        <Td muted className="whitespace-nowrap">
+          {time}
+        </Td>
+        <Td style={{ color: severityColor }}>{severityText}</Td>
+        <Td className="whitespace-pre-wrap break-all">{body}</Td>
+        <Td onClick={(e) => e.stopPropagation()}>
+          {traceID ? (
+            <span className="inline-flex items-center gap-1">
+              <Link
+                to="/traces/$traceId"
+                params={{ traceId: traceID }}
+                className="underline"
+                style={{ color: "var(--color-accent)" }}
+              >
+                {traceID.slice(0, 8)}
+              </Link>
+              <CopyButton value={traceID} label="Copy trace ID" />
+            </span>
+          ) : (
+            <span style={{ color: "var(--color-ink-muted)" }}>·</span>
+          )}
+        </Td>
+      </tr>
+      {isOpen && (
+        <tr>
+          <td
+            colSpan={5}
+            className="border-b"
+            style={{
+              background: "var(--color-surface-muted)",
+              borderColor: "var(--color-border)",
+            }}
+          >
+            <AttributesPanel
+              attributesJson={attributesJson}
+              filterTarget="/logs"
+            />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
@@ -264,7 +342,7 @@ function severityColor(n: number): string {
   return "var(--color-ink-muted)";
 }
 
-function Th({ children }: { children: React.ReactNode }) {
+function Th({ children }: { children?: React.ReactNode }) {
   return (
     <th
       className="px-4 py-2 border-b font-medium uppercase tracking-wide"
@@ -280,11 +358,13 @@ function Td({
   className,
   style,
   muted,
+  onClick,
 }: {
   children: React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
   muted?: boolean;
+  onClick?: React.MouseEventHandler<HTMLTableCellElement>;
 }) {
   return (
     <td
@@ -294,6 +374,7 @@ function Td({
         color: muted ? "var(--color-ink-muted)" : undefined,
         ...style,
       }}
+      onClick={onClick}
     >
       {children}
     </td>

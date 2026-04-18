@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -22,7 +23,7 @@ type Tracers map[string]trace.Tracer
 type TraceTemplate struct {
 	Service     string
 	Description string
-	Emit        func(ctx context.Context, tracers Tracers) error
+	Emit        func(ctx context.Context, tracers Tracers, loggers Loggers) error
 }
 
 var allTemplates = []TraceTemplate{
@@ -102,7 +103,7 @@ var allTemplates = []TraceTemplate{
 // Template implementations
 // -----------------------------------------------------------------------------
 
-func emitHTTPGetSuccess(ctx context.Context, tracers Tracers) error {
+func emitHTTPGetSuccess(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["api-gateway"]
 	route := pickRoute()
 	ctx, root := tracer.Start(ctx, "GET "+route, trace.WithSpanKind(trace.SpanKindServer))
@@ -153,7 +154,7 @@ func emitHTTPGetSuccess(ctx context.Context, tracers Tracers) error {
 	return nil
 }
 
-func emitHTTPPostValidationError(ctx context.Context, tracers Tracers) error {
+func emitHTTPPostValidationError(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["api-gateway"]
 	ctx, root := tracer.Start(ctx, "POST /orders", trace.WithSpanKind(trace.SpanKindServer))
 	root.SetAttributes(
@@ -178,7 +179,7 @@ func emitHTTPPostValidationError(ctx context.Context, tracers Tracers) error {
 	return nil
 }
 
-func emitHTTPServerError(ctx context.Context, tracers Tracers) error {
+func emitHTTPServerError(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["api-gateway"]
 	ctx, root := tracer.Start(ctx, "GET /reports", trace.WithSpanKind(trace.SpanKindServer))
 	root.SetAttributes(
@@ -193,18 +194,28 @@ func emitHTTPServerError(ctx context.Context, tracers Tracers) error {
 
 	sleepLike(10*time.Millisecond, 5*time.Millisecond)
 
-	_, dep := tracer.Start(ctx, "call reporting-service")
+	depCtx, dep := tracer.Start(ctx, "call reporting-service")
 	dep.SetAttributes(
 		attribute.String("rpc.service", "ReportingService"),
 		attribute.String("rpc.method", "GenerateMonthly"),
 	)
 	dep.SetStatus(codes.Error, "connection refused")
 	sleepLike(50*time.Millisecond, 20*time.Millisecond)
+	// Emit a correlated ERROR log inside the dep span's context — the SDK
+	// stamps trace_id + span_id from ctx so the log row links back to this
+	// span.
+	if logger := loggers["api-gateway"]; logger != nil {
+		emit(depCtx, logger, log.SeverityError, "ERROR",
+			"reporting-service unreachable: connection refused",
+			log.String("rpc.service", "ReportingService"),
+			log.Int("http.response.status_code", 500),
+		)
+	}
 	dep.End()
 	return nil
 }
 
-func emitSlowCheckout(ctx context.Context, tracers Tracers) error {
+func emitSlowCheckout(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	// Cross-service slow trace. api-gateway receives, then fans out to
 	// the owning services — inventory on api-gateway (simulating a
 	// monolith module), payments on the payments service, and
@@ -248,7 +259,7 @@ func emitSlowCheckout(ctx context.Context, tracers Tracers) error {
 	return nil
 }
 
-func emitPaymentsAuthorize(ctx context.Context, tracers Tracers) error {
+func emitPaymentsAuthorize(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["payments"]
 	ctx, root := tracer.Start(ctx, "PaymentService/Authorize", trace.WithSpanKind(trace.SpanKindServer))
 	root.SetAttributes(
@@ -298,7 +309,7 @@ func emitPaymentsAuthorize(ctx context.Context, tracers Tracers) error {
 	return nil
 }
 
-func emitPaymentsRefund(ctx context.Context, tracers Tracers) error {
+func emitPaymentsRefund(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	// Refund spans the payments service plus a db-worker DB hop — gives a
 	// two-service trace that's easy to scan in the summary swim-lane.
 	pay := tracers["payments"]
@@ -326,7 +337,7 @@ func emitPaymentsRefund(ctx context.Context, tracers Tracers) error {
 	return nil
 }
 
-func emitDBQuery(ctx context.Context, tracers Tracers) error {
+func emitDBQuery(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["db-worker"]
 	systems := []string{"postgresql", "redis", "mysql"}
 	sys := systems[rand.IntN(len(systems))]
@@ -348,7 +359,7 @@ func emitDBQuery(ctx context.Context, tracers Tracers) error {
 // records as an exception event without upgrading the span status. This is
 // the interesting case: status is UNSET but `error = true` still fires via
 // the exception-event branch of the synthetic field.
-func emitTimeoutException(ctx context.Context, tracers Tracers) error {
+func emitTimeoutException(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["api-gateway"]
 	ctx, root := tracer.Start(ctx, "GET /slow-api", trace.WithSpanKind(trace.SpanKindServer))
 	root.SetAttributes(
@@ -382,9 +393,9 @@ func emitTimeoutException(ctx context.Context, tracers Tracers) error {
 // emitPaymentsPanic models an unhandled error with both an exception event
 // and ERROR status — belt and braces, matches what well-instrumented code
 // emits via OTel's RecordError helper.
-func emitPaymentsPanic(ctx context.Context, tracers Tracers) error {
+func emitPaymentsPanic(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["payments"]
-	_, span := tracer.Start(ctx, "PaymentService/Charge", trace.WithSpanKind(trace.SpanKindServer))
+	spanCtx, span := tracer.Start(ctx, "PaymentService/Charge", trace.WithSpanKind(trace.SpanKindServer))
 	span.SetAttributes(
 		attribute.String("rpc.service", "PaymentService"),
 		attribute.String("rpc.method", "Charge"),
@@ -399,6 +410,16 @@ func emitPaymentsPanic(ctx context.Context, tracers Tracers) error {
 				"  at grpc.Dispatch (Dispatch.java:55)"),
 	))
 	span.SetStatus(codes.Error, "nil pointer dereference")
+	// Correlated ERROR log — this is what the structured logger emits right
+	// before/after an exception in real instrumented code.
+	if logger := loggers["payments"]; logger != nil {
+		emit(spanCtx, logger, log.SeverityError, "ERROR",
+			"nil pointer dereference: payment.card was nil",
+			log.String("exception.type", "NullPointerException"),
+			log.String("rpc.service", "PaymentService"),
+			log.String("rpc.method", "Charge"),
+		)
+	}
 	sleepLike(5*time.Millisecond, 2*time.Millisecond)
 	span.End()
 	return nil
@@ -411,7 +432,7 @@ func emitPaymentsPanic(ctx context.Context, tracers Tracers) error {
 // boundary looks like in OTel — you can't use parent/child because the
 // consumer runs async with a different wall-clock start, so Links are the
 // right mechanism.
-func emitAsyncLinkedJob(ctx context.Context, tracers Tracers) error {
+func emitAsyncLinkedJob(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["notifications"]
 	// 1) Producer trace: enqueue.
 	producerCtx, producer := tracer.Start(ctx, "queue.publish",
@@ -462,7 +483,7 @@ func emitAsyncLinkedJob(ctx context.Context, tracers Tracers) error {
 // render a dense ladder of tick marks on a single bar, and gives queries
 // something interesting to count (`SELECT count() WHERE event.name =
 // 'item.processed'` once we have event-level datasets).
-func emitBatchProcess(ctx context.Context, tracers Tracers) error {
+func emitBatchProcess(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["db-worker"]
 	_, span := tracer.Start(ctx, "batch.process",
 		trace.WithSpanKind(trace.SpanKindInternal))
@@ -509,9 +530,9 @@ func emitBatchProcess(ctx context.Context, tracers Tracers) error {
 // latter recording an exception event too (but keeping the client span
 // itself OK — retry exhaustion is a business outcome, not a span-level
 // bug). Great for seeing event ticks spaced out along a single bar.
-func emitRetryingRequest(ctx context.Context, tracers Tracers) error {
+func emitRetryingRequest(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["api-gateway"]
-	_, span := tracer.Start(ctx, "http.client.request",
+	spanCtx, span := tracer.Start(ctx, "http.client.request",
 		trace.WithSpanKind(trace.SpanKindClient))
 	span.SetAttributes(
 		attribute.String("http.request.method", "POST"),
@@ -563,10 +584,21 @@ func emitRetryingRequest(ctx context.Context, tracers Tracers) error {
 		attribute.String("exception.message", "partner-webhook rejected after max retries"),
 	))
 	span.SetAttributes(attribute.Int("http.response.status_code", 503))
+	// Correlated WARN — retry exhaustion is worth surfacing in logs so the
+	// user can find the trace from the log stream. Trace/span IDs flow from
+	// spanCtx automatically.
+	if logger := loggers["api-gateway"]; logger != nil {
+		emit(spanCtx, logger, log.SeverityWarn, "WARN",
+			fmt.Sprintf("partner-webhook giving up after %d attempts", maxAttempts),
+			log.String("peer.service", "partner-webhook"),
+			log.Int("retry.attempts", maxAttempts),
+			log.String("error.kind", "retry_exhausted"),
+		)
+	}
 	return nil
 }
 
-func emitNotificationSend(ctx context.Context, tracers Tracers) error {
+func emitNotificationSend(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	tracer := tracers["notifications"]
 	ctx, root := tracer.Start(ctx, "email.send", trace.WithSpanKind(trace.SpanKindServer))
 	root.SetAttributes(
@@ -617,7 +649,7 @@ func emitNotificationSend(ctx context.Context, tracers Tracers) error {
 //	  analytics.emit               [api-gateway]
 //	    db.INSERT analytics        [db-worker]
 //	  response.serialize           [api-gateway]
-func emitBigCheckoutFlow(ctx context.Context, tracers Tracers) error {
+func emitBigCheckoutFlow(ctx context.Context, tracers Tracers, loggers Loggers) error {
 	api := tracers["api-gateway"]
 	pay := tracers["payments"]
 	notif := tracers["notifications"]
