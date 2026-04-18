@@ -509,6 +509,20 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		return nil, errors.New("signal_type must be 'span' or 'log'")
 	}
 	limit := clampLimit(f.Limit, 100, 500)
+	// Start with the promoted / synthetic fields the query builder's
+	// realColumn() resolves natively (name, service.name, duration_ns,
+	// http.route, …). These aren't strictly required to be in
+	// attribute_keys — that table only tracks JSONB attrs — so the picker
+	// would otherwise hide the columns-only ones entirely. When a
+	// semconv'd key appears in both (the attribute sampler caught it in
+	// the JSONB payload), we'll merge the observation count in below so
+	// ordering still reflects real use.
+	out := matchingSyntheticFields(f.SignalType, f.Prefix)
+	byKey := make(map[string]int, len(out))
+	for i, fi := range out {
+		byKey[fi.Key] = i
+	}
+
 	// When a service is specified, constrain to that service plus the
 	// resource-level rows (service_name = '') so resource attributes still
 	// surface in autocomplete. When no service is specified, pool across
@@ -536,15 +550,81 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		return nil, err
 	}
 	defer rows.Close()
-	var out []store.FieldInfo
 	for rows.Next() {
 		var fi store.FieldInfo
 		if err := rows.Scan(&fi.Key, &fi.ValueType, &fi.Count); err != nil {
 			return nil, err
 		}
+		// Dedupe by key: if the synthetic list already has this key
+		// (e.g. http.route — promoted column that also appears in
+		// attribute_keys via the sampler), keep the synthetic entry's
+		// canonical type but absorb the real observation count.
+		if idx, ok := byKey[fi.Key]; ok {
+			out[idx].Count += fi.Count
+			continue
+		}
+		byKey[fi.Key] = len(out)
 		out = append(out, fi)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// syntheticFields lists the fields the query builder resolves to a
+// promoted column or a synthetic expression via realColumn() that a span
+// or log *always* has — they're intrinsic to the row, not observed
+// attributes. Keys the sampler would ever record (http.route,
+// http.request.method, rpc.service, db.system, etc.) are deliberately
+// absent: they land in attribute_keys only for services that actually
+// emit them, so service-scoped picker results stay faithful to what the
+// service actually carries.
+// Keep in sync with internal/query/builder.go:realColumn().
+var syntheticSpanFields = []store.FieldInfo{
+	{Key: "name", ValueType: "str"},
+	{Key: "service.name", ValueType: "str"},
+	{Key: "kind", ValueType: "int"},
+	{Key: "status_code", ValueType: "int"},
+	{Key: "duration_ns", ValueType: "int"},
+	{Key: "duration_ms", ValueType: "int"},
+	{Key: "start_time_ns", ValueType: "time"},
+	{Key: "parent_span_id", ValueType: "str"},
+	{Key: "trace_id", ValueType: "str"},
+	{Key: "is_root", ValueType: "bool"},
+	{Key: "error", ValueType: "bool"},
+}
+
+var syntheticLogFields = []store.FieldInfo{
+	{Key: "service.name", ValueType: "str"},
+	{Key: "severity_number", ValueType: "int"},
+	{Key: "severity_text", ValueType: "str"},
+	{Key: "body", ValueType: "str"},
+	{Key: "time_ns", ValueType: "time"},
+	{Key: "trace_id", ValueType: "str"},
+	{Key: "error", ValueType: "bool"},
+}
+
+func matchingSyntheticFields(signalType, prefix string) []store.FieldInfo {
+	var src []store.FieldInfo
+	switch signalType {
+	case "span":
+		src = syntheticSpanFields
+	case "log":
+		src = syntheticLogFields
+	default:
+		return nil
+	}
+	out := make([]store.FieldInfo, 0, len(src))
+	for _, fi := range src {
+		if prefix == "" || strings.HasPrefix(fi.Key, prefix) {
+			out = append(out, fi)
+		}
+	}
+	return out
 }
 
 func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]string, error) {

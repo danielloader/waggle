@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,23 +85,57 @@ func TestWriteAndReadSpan(t *testing.T) {
 		t.Fatalf("expected 1 span, got %d", len(detail.Spans))
 	}
 
+	// ListFields should surface the attribute-keys row we just wrote
+	// ("http.route" with a non-zero count) and the promoted / synthetic
+	// fields the query builder resolves natively ("name", "service.name",
+	// "duration_ns", ...). Synthetic fields carry count=0; attribute-keys
+	// rows carry the actual observation count.
 	fields, err := s.ListFields(ctx, store.FieldFilter{SignalType: "span", Service: "test"})
 	if err != nil {
 		t.Fatalf("ListFields: %v", err)
 	}
-	if len(fields) != 1 || fields[0].Key != "http.route" {
-		t.Fatalf("unexpected fields: %+v", fields)
+	keys := make(map[string]store.FieldInfo)
+	for _, fi := range fields {
+		keys[fi.Key] = fi
+	}
+	if fi, ok := keys["http.route"]; !ok || fi.Count == 0 {
+		t.Fatalf("expected http.route attribute_keys row: %+v", fields)
+	}
+	for _, k := range []string{"name", "service.name", "duration_ns", "is_root", "error"} {
+		if _, ok := keys[k]; !ok {
+			t.Fatalf("expected synthetic field %q in results: %+v", k, fields)
+		}
 	}
 
-	// With no service scope, ListFields should pool across every service
-	// so the UI's "no WHERE filter yet" state can still populate
-	// group-by / autocomplete dropdowns.
+	// Prefix-filter narrows both synthetic + attribute_keys rows.
+	prefixed, err := s.ListFields(ctx, store.FieldFilter{SignalType: "span", Prefix: "http."})
+	if err != nil {
+		t.Fatalf("ListFields prefix: %v", err)
+	}
+	for _, fi := range prefixed {
+		if !strings.HasPrefix(fi.Key, "http.") {
+			t.Fatalf("prefix leak: %+v", fi)
+		}
+	}
+	if len(prefixed) == 0 {
+		t.Fatalf("expected at least one http.* field")
+	}
+
+	// With no service scope, ListFields still returns data (regression
+	// guard for the previous bug where service_name = '' matched nothing).
 	fieldsAll, err := s.ListFields(ctx, store.FieldFilter{SignalType: "span"})
 	if err != nil {
 		t.Fatalf("ListFields (no service): %v", err)
 	}
-	if len(fieldsAll) != 1 || fieldsAll[0].Key != "http.route" {
-		t.Fatalf("unexpected cross-service fields: %+v", fieldsAll)
+	foundRoute := false
+	for _, fi := range fieldsAll {
+		if fi.Key == "http.route" {
+			foundRoute = true
+			break
+		}
+	}
+	if !foundRoute {
+		t.Fatalf("expected http.route in cross-service fields: %+v", fieldsAll)
 	}
 }
 
