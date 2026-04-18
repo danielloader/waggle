@@ -116,8 +116,7 @@ export function LogsPage() {
       <Accordion
         label="Chart"
         open={chartOpen}
-        collapseProgress={scrollProgress}
-        onToggle={() => (chartOpen ? setChartOpen(false) : reopen(setChartOpen))}
+        onToggle={() => setChartOpen((o) => !o)}
       >
         <div className="p-3" style={{ background: "var(--color-surface-muted)" }}>
           <QueryChart
