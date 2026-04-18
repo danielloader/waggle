@@ -1,0 +1,12 @@
+/bin/
+/tmp/
+/internal/ui/dist/*
+!/internal/ui/dist/.gitkeep
+/ui/node_modules/
+/ui/dist/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+.env
+.env.local

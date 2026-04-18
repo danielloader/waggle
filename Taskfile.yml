@@ -1,0 +1,104 @@
+# Run with: `go tool task <target>` (or `task` if installed globally).
+# `go tool task` uses the version pinned in go.mod — no system install needed.
+version: "3"
+
+vars:
+  BIN: bin/waggle
+  UI_DIST: internal/ui/dist
+  VITE_DIR: ui
+
+tasks:
+  default:
+    cmds:
+      - go tool task --list-all
+
+  # ------------------------------------------------------------------ dev
+  dev:
+    desc: Run Go (air hot reload) and Vite dev server concurrently.
+    deps: [dev:ui, dev:go]
+
+  dev:go:
+    desc: Go server with hot reload (requires air — `go install github.com/air-verse/air@latest`).
+    cmds:
+      - air -c .air.toml
+
+  dev:ui:
+    desc: Vite dev server on :5173, proxying /v1 and /api to :4318.
+    dir: "{{.VITE_DIR}}"
+    cmds:
+      - npm run dev
+
+  # ---------------------------------------------------------------- build
+  build:
+    desc: Build the UI and compile a single static binary.
+    deps: [ui:build]
+    cmds:
+      - mkdir -p bin
+      - CGO_ENABLED=0 go build -o {{.BIN}} ./cmd/waggle
+
+  ui:build:
+    desc: Build the Vite UI and copy into internal/ui/dist.
+    cmds:
+      - cd {{.VITE_DIR}} && npm ci
+      - cd {{.VITE_DIR}} && npm run build
+      - rm -rf {{.UI_DIST}}
+      - mkdir -p {{.UI_DIST}}
+      - cp -R {{.VITE_DIR}}/dist/. {{.UI_DIST}}/
+    sources:
+      - "{{.VITE_DIR}}/src/**/*"
+      - "{{.VITE_DIR}}/index.html"
+      - "{{.VITE_DIR}}/vite.config.ts"
+      - "{{.VITE_DIR}}/package.json"
+      - "{{.VITE_DIR}}/package-lock.json"
+    generates:
+      - "{{.UI_DIST}}/index.html"
+
+  # ---------------------------------------------------------------- run
+  run:
+    desc: Run the built binary.
+    deps: [build]
+    cmds:
+      - "{{.BIN}}"
+
+  # --------------------------------------------------------------- tests
+  test:
+    desc: Run Go and UI tests.
+    deps: [test:go, test:ui]
+
+  test:go:
+    cmds:
+      - go test ./...
+
+  test:ui:
+    dir: "{{.VITE_DIR}}"
+    cmds:
+      - npm test --if-present
+
+  # -------------------------------------------------------------- tsc / fmt
+  typecheck:
+    desc: TypeScript and Go vet.
+    cmds:
+      - cd {{.VITE_DIR}} && npx tsc --noEmit -p tsconfig.app.json
+      - go vet ./...
+
+  fmt:
+    desc: gofmt + goimports on Go sources.
+    cmds:
+      - gofmt -w $(find . -name '*.go' -not -path './ui/*' -not -path './bin/*')
+      - command -v goimports >/dev/null && goimports -w $(find . -name '*.go' -not -path './ui/*' -not -path './bin/*') || true
+
+  # ---------------------------------------------------------- loadgen
+  loadgen:
+    desc: Stream varied traces to a running waggle (use --rate N --jitter F).
+    cmds:
+      - go run ./cmd/loadgen {{.CLI_ARGS}}
+
+  # -------------------------------------------------------------- clean
+  clean:
+    desc: Remove bin/, tmp/, and the embedded dist directory.
+    cmds:
+      - rm -rf bin tmp
+      - rm -rf {{.UI_DIST}}
+      - mkdir -p {{.UI_DIST}}
+      - touch {{.UI_DIST}}/.gitkeep
+      - rm -rf {{.VITE_DIR}}/dist {{.VITE_DIR}}/node_modules
