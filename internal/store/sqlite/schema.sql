@@ -190,3 +190,51 @@ CREATE TABLE IF NOT EXISTS attribute_values (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_attrvals_lookup ON attribute_values(signal_type, service_name, key, count DESC);
+
+-- =========================================================================
+-- Metrics
+-- ---
+-- Two-table model: a catalog of unique (resource, scope, name, attrs)
+-- series and a points table that references them. Stage 1 writes Sum +
+-- Gauge values into `metric_points`; stages 4-5 add histogram +
+-- exp-histogram sibling tables that reference the same `metric_series`
+-- row. See plans/metrics.md for the design decisions.
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS metric_series (
+    series_id     INTEGER PRIMARY KEY,
+    resource_id   INTEGER NOT NULL REFERENCES resources(resource_id),
+    scope_id      INTEGER NOT NULL REFERENCES scopes(scope_id),
+    service_name  TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    unit          TEXT,
+    -- kind: sum | gauge | histogram | exp_histogram | summary.
+    -- v1 only writes sum + gauge; later stages add the distribution
+    -- kinds without migrating this column.
+    kind          TEXT NOT NULL,
+    -- temporality + monotonic are meaningful for sum + histogram; null
+    -- for gauge/summary.
+    temporality   TEXT,
+    monotonic     INTEGER,
+    attributes    TEXT NOT NULL,
+    first_seen_ns INTEGER NOT NULL,
+    last_seen_ns  INTEGER NOT NULL,
+    UNIQUE(resource_id, scope_id, name, attributes)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_metric_series_svc_name ON metric_series(service_name, name);
+CREATE INDEX IF NOT EXISTS idx_metric_series_name ON metric_series(name);
+
+-- Scalar point table — one row per (series_id, time_ns). Stage 1 is
+-- the only writer. Series.kind decides whether the value is a counter
+-- level (sum/cumulative) or a sampled value (gauge).
+CREATE TABLE IF NOT EXISTS metric_points (
+    series_id     INTEGER NOT NULL REFERENCES metric_series(series_id),
+    time_ns       INTEGER NOT NULL,
+    start_time_ns INTEGER,
+    value         REAL NOT NULL,
+    PRIMARY KEY (series_id, time_ns)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_metric_points_time ON metric_points(time_ns);

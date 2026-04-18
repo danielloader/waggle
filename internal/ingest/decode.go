@@ -13,6 +13,7 @@ import (
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 )
 
 const (
@@ -40,6 +41,18 @@ func decodeLogs(r *http.Request) (*collogspb.ExportLogsServiceRequest, error) {
 		return nil, err
 	}
 	req := &collogspb.ExportLogsServiceRequest{}
+	if err := unmarshal(r.Header.Get("Content-Type"), body, req); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+func decodeMetrics(r *http.Request) (*colmetricspb.ExportMetricsServiceRequest, error) {
+	body, err := readBody(r)
+	if err != nil {
+		return nil, err
+	}
+	req := &colmetricspb.ExportMetricsServiceRequest{}
 	if err := unmarshal(r.Header.Get("Content-Type"), body, req); err != nil {
 		return nil, err
 	}

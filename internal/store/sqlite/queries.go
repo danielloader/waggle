@@ -15,9 +15,11 @@ import (
 // WriteBatch persists one ingest batch inside a single transaction.
 //
 // Order: resources → scopes → spans → span_events → span_links → logs →
-// attribute_keys → attribute_values. Constraints fire in that order.
+// metric_series → metric_points → attribute_keys → attribute_values.
+// Constraints fire in that order.
 func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
-	if len(b.Spans) == 0 && len(b.Logs) == 0 && len(b.Resources) == 0 && len(b.Scopes) == 0 {
+	if len(b.Spans) == 0 && len(b.Logs) == 0 && len(b.Resources) == 0 && len(b.Scopes) == 0 &&
+		len(b.MetricSeries) == 0 && len(b.MetricPoints) == 0 {
 		return nil
 	}
 
@@ -37,6 +39,13 @@ func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
 		return err
 	}
 	if err := writeLogs(ctx, tx, b.Logs); err != nil {
+		return err
+	}
+	seriesIDs, err := upsertMetricSeries(ctx, tx, b.MetricSeries)
+	if err != nil {
+		return err
+	}
+	if err := writeMetricPoints(ctx, tx, b.MetricPoints, seriesIDs); err != nil {
 		return err
 	}
 	if err := writeAttrKeys(ctx, tx, b.AttrKeys); err != nil {
@@ -186,6 +195,107 @@ func writeLogs(ctx context.Context, tx *sql.Tx, logs []store.LogRecord) error {
 			nullBytes(l.SpanID), l.Flags, l.DroppedAttrsCount, l.AttributesJSON,
 		); err != nil {
 			return fmt.Errorf("insert log: %w", err)
+		}
+	}
+	return nil
+}
+
+// upsertMetricSeries inserts each series if it doesn't already exist
+// (by the UNIQUE key on resource_id, scope_id, name, attributes) and
+// bumps its last_seen_ns / first_seen_ns otherwise. Returns a lookup
+// keyed by MetricSeriesRef so the caller (writeMetricPoints) can
+// resolve each point to a series_id inside the same transaction.
+func upsertMetricSeries(
+	ctx context.Context, tx *sql.Tx, series []store.MetricSeries,
+) (map[store.MetricSeriesRef]int64, error) {
+	ids := make(map[store.MetricSeriesRef]int64, len(series))
+	if len(series) == 0 {
+		return ids, nil
+	}
+	const upQ = `INSERT INTO metric_series
+		(resource_id, scope_id, service_name, name, description, unit, kind,
+		 temporality, monotonic, attributes, first_seen_ns, last_seen_ns)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(resource_id, scope_id, name, attributes) DO UPDATE SET
+		  last_seen_ns  = max(last_seen_ns, excluded.last_seen_ns),
+		  first_seen_ns = min(first_seen_ns, excluded.first_seen_ns)`
+	upStmt, err := tx.PrepareContext(ctx, upQ)
+	if err != nil {
+		return nil, fmt.Errorf("prepare metric_series: %w", err)
+	}
+	defer upStmt.Close()
+
+	const selQ = `SELECT series_id FROM metric_series
+		WHERE resource_id = ? AND scope_id = ? AND name = ? AND attributes = ?`
+	selStmt, err := tx.PrepareContext(ctx, selQ)
+	if err != nil {
+		return nil, fmt.Errorf("prepare metric_series lookup: %w", err)
+	}
+	defer selStmt.Close()
+
+	for _, s := range series {
+		var mono any
+		if s.Monotonic != nil {
+			if *s.Monotonic {
+				mono = 1
+			} else {
+				mono = 0
+			}
+		}
+		if _, err := upStmt.ExecContext(ctx,
+			int64(s.ResourceID), int64(s.ScopeID), s.ServiceName, s.Name,
+			nullStr(s.Description), nullStr(s.Unit), s.Kind,
+			nullStr(s.Temporality), mono, s.AttributesJSON,
+			s.FirstSeenNS, s.LastSeenNS,
+		); err != nil {
+			return nil, fmt.Errorf("upsert metric_series %q: %w", s.Name, err)
+		}
+		ref := store.MetricSeriesRef{
+			ResourceID: s.ResourceID, ScopeID: s.ScopeID,
+			Name: s.Name, AttributesJSON: s.AttributesJSON,
+		}
+		var id int64
+		if err := selStmt.QueryRowContext(ctx,
+			int64(ref.ResourceID), int64(ref.ScopeID), ref.Name, ref.AttributesJSON,
+		).Scan(&id); err != nil {
+			return nil, fmt.Errorf("resolve metric_series id %q: %w", s.Name, err)
+		}
+		ids[ref] = id
+	}
+	return ids, nil
+}
+
+// writeMetricPoints inserts scalar points (Sum / Gauge). Points whose
+// series_id can't be resolved from the same batch's MetricSeries are
+// skipped with a non-fatal error — such a point can't reference a
+// valid FK and would abort the whole transaction otherwise.
+func writeMetricPoints(
+	ctx context.Context, tx *sql.Tx,
+	points []store.MetricPoint, seriesIDs map[store.MetricSeriesRef]int64,
+) error {
+	if len(points) == 0 {
+		return nil
+	}
+	const q = `INSERT INTO metric_points
+		(series_id, time_ns, start_time_ns, value)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(series_id, time_ns) DO NOTHING`
+	stmt, err := tx.PrepareContext(ctx, q)
+	if err != nil {
+		return fmt.Errorf("prepare metric_points: %w", err)
+	}
+	defer stmt.Close()
+	for _, p := range points {
+		id, ok := seriesIDs[p.SeriesRef]
+		if !ok {
+			return fmt.Errorf("metric point for unknown series %+v", p.SeriesRef)
+		}
+		var startNS any
+		if p.StartTimeNS > 0 {
+			startNS = p.StartTimeNS
+		}
+		if _, err := stmt.ExecContext(ctx, id, p.TimeNS, startNS, p.Value); err != nil {
+			return fmt.Errorf("insert metric_point: %w", err)
 		}
 	}
 	return nil
@@ -1168,10 +1278,17 @@ func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE time_ns < ?`, olderThanNS); err != nil {
 		return err
 	}
+	// Metric points drop by their own time_ns. Series are kept even
+	// after all their points age out, because a fresh point arriving
+	// later should land on the same series_id (stable catalog).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM metric_points WHERE time_ns < ?`, olderThanNS); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM resources
 		WHERE last_seen_ns < ?
 		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM spans)
-		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM logs)`, olderThanNS); err != nil {
+		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM logs)
+		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM metric_series)`, olderThanNS); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1188,6 +1305,8 @@ func (s *Store) Clear(ctx context.Context) error {
 		`DELETE FROM span_links`,
 		`DELETE FROM spans`,
 		`DELETE FROM logs`,
+		`DELETE FROM metric_points`,
+		`DELETE FROM metric_series`,
 		`DELETE FROM scopes`,
 		`DELETE FROM resources`,
 		`DELETE FROM attribute_keys`,

@@ -111,15 +111,63 @@ type AttrValueDelta struct {
 	LastSeenNS  int64
 }
 
+// MetricSeries identifies one unique (resource, scope, name, attrs)
+// timeseries. Points accumulated under one series share these facets so
+// the catalog stays small compared to the point count.
+type MetricSeries struct {
+	// SeriesID is zero when the writer is upserting; the store fills it
+	// in and reuses the same row across batches via the UNIQUE key.
+	ResourceID   uint64
+	ScopeID      uint64
+	ServiceName  string
+	Name         string
+	Description  string
+	Unit         string
+	// Kind: "sum" | "gauge" | "histogram" | "exp_histogram" | "summary".
+	Kind           string
+	// Temporality: "cumulative" | "delta" (blank for gauge + summary).
+	Temporality    string
+	// Monotonic is a pointer so "not applicable" (gauge, summary) is
+	// distinguishable from "false" (non-monotonic sum).
+	Monotonic      *bool
+	AttributesJSON string
+	FirstSeenNS    int64
+	LastSeenNS     int64
+}
+
+// MetricPoint is a single scalar value for a series (Sum or Gauge).
+// Histogram / exp-histogram points land in their own types when those
+// stages arrive (see plans/metrics.md §4).
+type MetricPoint struct {
+	// Writer matches the point to its series by the tuple below; the
+	// store resolves it to a series_id inside the transaction.
+	SeriesRef     MetricSeriesRef
+	TimeNS        int64
+	StartTimeNS   int64 // 0 when not meaningful (gauge)
+	Value         float64
+}
+
+// MetricSeriesRef is the minimal tuple required to look up a series's
+// series_id inside a WriteBatch transaction. Matching the UNIQUE key on
+// metric_series: (resource_id, scope_id, name, attributes).
+type MetricSeriesRef struct {
+	ResourceID     uint64
+	ScopeID        uint64
+	Name           string
+	AttributesJSON string
+}
+
 // Batch is the unit of work for the writer goroutine.
 type Batch struct {
-	Resources   []Resource
-	Scopes      []Scope
-	Spans       []Span
-	Logs        []LogRecord
-	AttrKeys    []AttrKeyDelta
-	AttrValues  []AttrValueDelta
-	EnqueuedAt  time.Time
+	Resources     []Resource
+	Scopes        []Scope
+	Spans         []Span
+	Logs          []LogRecord
+	MetricSeries  []MetricSeries
+	MetricPoints  []MetricPoint
+	AttrKeys      []AttrKeyDelta
+	AttrValues    []AttrValueDelta
+	EnqueuedAt    time.Time
 }
 
 // ServiceSummary is a row for the service/dataset selector.
