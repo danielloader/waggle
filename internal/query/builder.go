@@ -376,6 +376,8 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 			return resolvedField{SQL: "status_code", Type: "int"}, true
 		case "duration_ns":
 			return resolvedField{SQL: "duration_ns", Type: "int"}, true
+		case "duration_ms":
+			return resolvedField{SQL: "(duration_ns / 1000000)", Type: "int"}, true
 		case "start_time_ns":
 			return resolvedField{SQL: "start_time_ns", Type: "time"}, true
 		case "parent_span_id":
