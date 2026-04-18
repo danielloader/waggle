@@ -8,10 +8,12 @@ import { ResultTabs } from "../features/query/ResultTabs";
 import {
   bucketMsFor,
   buildCountQuery,
+  refreshIntervalMs,
   resolveSearchRange,
   runQuery,
   type QuerySearch,
 } from "../lib/query";
+import { useRefreshPersistence } from "../lib/refreshPersistence";
 import { logsRoute } from "../router";
 
 // Scroll distance (in Explore-Data pixels) over which the query/chart
@@ -72,10 +74,12 @@ export function LogsPage() {
   const setSearch = (next: QuerySearch) =>
     navigate({ to: "/logs", search: next as unknown as Record<string, unknown> });
 
+  useRefreshPersistence(search, setSearch);
+
   const chart = useQuery({
     queryKey: ["query", "logs", search],
     queryFn: ({ signal }) => runQuery(buildCountQuery("logs", search), signal),
-    refetchInterval: 10_000,
+    refetchInterval: refreshIntervalMs(search.refresh),
   });
 
   // Click a chart bucket → ZOOM the time window to that bucket. Using
