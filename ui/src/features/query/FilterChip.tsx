@@ -32,7 +32,7 @@ export function FilterChip({ filter, dataset = "spans", service, onChange, onRem
         trigger={
           <button
             type="button"
-            className="px-2 py-1 font-mono hover:bg-[var(--color-surface-muted)]"
+            className="px-2 py-1 font-mono hover:bg-[var(--color-card-hover)]"
           >
             {filter.field}
           </button>
@@ -62,7 +62,7 @@ export function FilterChip({ filter, dataset = "spans", service, onChange, onRem
       <button
         type="button"
         onClick={onRemove}
-        className="px-1.5 py-1 hover:bg-[var(--color-surface-muted)]"
+        className="px-1.5 py-1 hover:bg-[var(--color-card-hover)]"
         title="Remove filter"
       >
         <X className="w-3.5 h-3.5" />

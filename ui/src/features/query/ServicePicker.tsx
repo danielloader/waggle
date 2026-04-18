@@ -46,7 +46,7 @@ export function ServicePicker({ where, onChange }: Props) {
       trigger={
         <button
           type="button"
-          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md border text-sm font-medium hover:bg-[var(--color-surface-muted)]"
+          className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md border text-sm font-medium hover:bg-[var(--color-card-hover)]"
           style={{
             background: "var(--color-surface)",
             borderColor: "var(--color-border)",
@@ -67,7 +67,7 @@ export function ServicePicker({ where, onChange }: Props) {
         <button
           type="button"
           onClick={() => select(null)}
-          className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--color-surface-muted)]"
+          className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--color-card-hover)]"
           style={current === null ? { background: "var(--color-surface-muted)", fontWeight: 500 } : {}}
         >
           All services
@@ -85,7 +85,7 @@ export function ServicePicker({ where, onChange }: Props) {
             key={s.service}
             type="button"
             onClick={() => select(s.service)}
-            className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--color-surface-muted)] flex items-center justify-between gap-3"
+            className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-[var(--color-card-hover)] flex items-center justify-between gap-3"
             style={current === s.service ? { background: "var(--color-surface-muted)", fontWeight: 500 } : {}}
           >
             <span className="inline-flex items-center gap-2">

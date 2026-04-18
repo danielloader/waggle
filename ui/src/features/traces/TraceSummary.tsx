@@ -66,7 +66,7 @@ export function TraceSummary({ model, selectedSpanID, onSelect }: Props) {
               "ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] border",
               highlightErrors
                 ? "font-medium"
-                : "hover:bg-[var(--color-surface)]",
+                : "hover:bg-[var(--color-card-hover)]",
             )}
             style={{
               borderColor: highlightErrors

@@ -53,8 +53,11 @@ export function ResultTabs({
 
   return (
     <div className="h-full flex flex-col">
+      {/* Tab bar gets its own top + bottom border so it reads as a
+          distinct strip wedged between the chart (or accordion header,
+          when chart is collapsed) and the results below. */}
       <div
-        className="flex items-center justify-between px-4 border-b"
+        className="flex items-center justify-between px-4 border-t border-b"
         style={{
           background: "var(--color-surface)",
           borderColor: "var(--color-border)",
@@ -67,10 +70,10 @@ export function ResultTabs({
               type="button"
               onClick={() => onTabChange(t.id)}
               className={clsx(
-                "px-3 py-2 text-sm border-b-2 -mb-px",
+                "px-3 py-2 text-sm border-b-2 -mb-px transition-colors",
                 active === t.id
                   ? "font-semibold"
-                  : "font-normal hover:bg-[var(--color-surface-muted)]",
+                  : "font-normal hover:bg-[var(--color-surface-hover)]",
               )}
               style={{
                 borderColor:

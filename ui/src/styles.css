@@ -5,14 +5,39 @@
     Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "SFMono-Regular", "Menlo", monospace;
 
+  /* Surface hierarchy
+     -----------------
+     The page is white and cards are warm grey — they visually "sit on"
+     the page. `surface` = the page. `card` = raised panels. `inset` =
+     the deepest grey for sunken regions like the chart well. Zebra
+     stripes and hover shift by a small delta so interactive state
+     reads clearly without needing a border. */
   --color-surface: #ffffff;
-  --color-surface-muted: #f7f6f3;
-  --color-border: #e6e4df;
+  --color-card: #f4f1ea;
+  --color-card-hover: #ede9e0;
+  /* Row striping sits on white, so keep the delta tiny — just enough
+     to distinguish rows without visually banding the whole table. */
+  --color-card-stripe: #faf9f5;
+  --color-inset: #e5e1d8;
+
+  /* `surface-muted` is kept as an alias — retargeted to the row-stripe
+     tint so existing usages (subtle highlights, selected-row background,
+     chip operator badges) read as "barely tinted" rather than the dark
+     inset grey. Places that actually want the deeper grey use
+     `--color-inset` directly. */
+  --color-surface-muted: var(--color-card-stripe);
+
+  --color-border: #d9d6cd;
+  --color-border-subtle: #e5e1d8;
   --color-ink: #1d1d1b;
-  --color-ink-muted: #6b6b68;
+  --color-ink-muted: #5a5a57;
   --color-accent: #2563eb;
   --color-error: #c0362f;
   --color-ok: #267e4d;
+
+  /* Subtle card elevation — faint shadow + 1px inner outline. Cards
+     using this don't need their own explicit outlined border. */
+  --shadow-card: 0 1px 0 rgb(0 0 0 / 0.02), 0 0 0 1px rgb(0 0 0 / 0.04);
 }
 
 * {
@@ -29,7 +54,7 @@ body,
 body {
   font-family: var(--font-sans);
   color: var(--color-ink);
-  background: var(--color-surface-muted);
+  background: var(--color-surface);
   font-size: 14px;
   line-height: 1.45;
 }

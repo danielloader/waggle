@@ -122,7 +122,7 @@ export function LogsPage() {
         open={chartOpen}
         onToggle={() => setChartOpen((o) => !o)}
       >
-        <div className="p-3" style={{ background: "var(--color-surface-muted)" }}>
+        <div className="p-3" style={{ background: "var(--color-surface)" }}>
           <QueryChart
             result={chart.data}
             loading={chart.isPending}

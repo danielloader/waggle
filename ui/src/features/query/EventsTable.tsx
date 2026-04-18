@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import clsx from "clsx";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
   Dataset,
@@ -123,7 +124,17 @@ function SpansTable({
             // the server in raw-rows mode.
             const errorFlag = Number(row[idx.error] ?? 0);
             return (
-              <tr key={i}>
+              <tr
+                key={i}
+                className={clsx(
+                  "hover:bg-[var(--color-card-hover)]",
+                  // Class-based stripe (not inline style) so the
+                  // hover: utility wins by CSS source order. Inline
+                  // background would have higher specificity than the
+                  // hover rule and pin the stripe colour on hover.
+                  i % 2 === 1 && "bg-[var(--color-card-stripe)]",
+                )}
+              >
                 <Td muted>{formatWall(startNS)}</Td>
                 <Td>{name}</Td>
                 <Td className="tabular-nums">{formatDuration(durNS)}</Td>
@@ -250,7 +261,7 @@ function FragmentRow({
   return (
     <>
       <tr
-        className="align-top cursor-pointer hover:bg-[var(--color-surface-muted)]"
+        className="align-top cursor-pointer hover:bg-[var(--color-card-hover)]"
         onClick={onToggle}
       >
         <Td className="w-6">

@@ -53,7 +53,7 @@ export function OrderByEditor({ orderBy, onChange, suggestions = [] }: Props) {
           </select>
           <button
             type="button"
-            className="px-1.5 py-1 rounded hover:bg-[var(--color-surface-muted)]"
+            className="px-1.5 py-1 rounded hover:bg-[var(--color-card-hover)]"
             onClick={() => onChange(orderBy.filter((_, idx) => idx !== i))}
             title="Remove"
           >
@@ -64,7 +64,7 @@ export function OrderByEditor({ orderBy, onChange, suggestions = [] }: Props) {
       <button
         type="button"
         onClick={() => onChange([...orderBy, { field: suggestions[0] ?? "count", dir: "desc" }])}
-        className="self-start flex items-center gap-1 px-2 py-1 rounded border text-sm text-[var(--color-ink-muted)] hover:bg-[var(--color-surface-muted)]"
+        className="self-start flex items-center gap-1 px-2 py-1 rounded border text-sm text-[var(--color-ink-muted)] hover:bg-[var(--color-card-hover)]"
         style={{
           background: "var(--color-surface)",
           borderColor: "var(--color-border)",

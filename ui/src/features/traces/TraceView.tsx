@@ -224,8 +224,11 @@ export function TraceView({ traceID }: Props) {
           />
         </div>
         <div
-          className="shrink-0 w-[420px] flex flex-col"
-          style={{ background: "var(--color-surface)" }}
+          className="shrink-0 w-[420px] flex flex-col border-l"
+          style={{
+            background: "var(--color-surface)",
+            borderColor: "var(--color-border)",
+          }}
         >
           <SpanDetail
             span={selected}
@@ -289,7 +292,7 @@ function Header({
         type="button"
         onClick={onReload}
         disabled={isReloading}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-sm hover:bg-[var(--color-surface-muted)]"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-sm hover:bg-[var(--color-card-hover)]"
         style={{
           background: "var(--color-surface)",
           borderColor: "var(--color-border)",
