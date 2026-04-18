@@ -12,6 +12,9 @@ interface Props {
   onTabChange: (tab: TabID) => void;
   /** Optional slot for a logs-only FTS search input rendered next to tabs. */
   rightSlot?: React.ReactNode;
+  /** Scroll callback from the Explore Data tab — the page uses it to
+   *  collapse the query/chart header once the user drills in. */
+  onExploreScrollY?: (y: number) => void;
 }
 
 type Tab = { id: TabID; label: string; datasets?: Dataset[] };
@@ -30,7 +33,13 @@ const TABS: Tab[] = [
  * Data lazily mounts the events table, so the heavier raw-rows query only
  * runs when the user actually opens that tab.
  */
-export function ResultTabs({ dataset, search, onTabChange, rightSlot }: Props) {
+export function ResultTabs({
+  dataset,
+  search,
+  onTabChange,
+  rightSlot,
+  onExploreScrollY,
+}: Props) {
   const visibleTabs = TABS.filter(
     (t) => !t.datasets || t.datasets.includes(dataset),
   );
@@ -79,7 +88,11 @@ export function ResultTabs({ dataset, search, onTabChange, rightSlot }: Props) {
         {active === "overview" && <OverviewTab dataset={dataset} search={search} />}
         {active === "traces" && <TracesTab search={search} />}
         {active === "explore" && (
-          <EventsTable dataset={dataset} search={search} />
+          <EventsTable
+            dataset={dataset}
+            search={search}
+            onScrollY={onExploreScrollY}
+          />
         )}
       </div>
     </div>
