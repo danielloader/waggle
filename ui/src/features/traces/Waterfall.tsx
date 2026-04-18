@@ -218,7 +218,7 @@ function Row({
     <div
       className={clsx(
         "absolute left-0 right-0 flex items-center cursor-pointer select-none",
-        "hover:bg-[var(--color-surface-muted)]",
+        "hover:bg-surface-muted",
       )}
       style={{
         top,
@@ -243,7 +243,7 @@ function Row({
         {row.childCount > 0 ? (
           <button
             type="button"
-            className="p-0.5 rounded hover:bg-[var(--color-border)]/50"
+            className="p-0.5 rounded hover:bg-border/50"
             onClick={(e) => {
               e.stopPropagation();
               onToggleCollapse(row.span.span_id);

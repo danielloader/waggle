@@ -93,6 +93,18 @@ tasks:
     cmds:
       - go run ./cmd/loadgen {{.CLI_ARGS}}
 
+  # ---------------------------------------------------------- release
+  release:snapshot:
+    desc: Build a snapshot release locally (archives + docker image, no publish). Requires `goreleaser` on PATH.
+    deps: [ui:build]
+    cmds:
+      - goreleaser release --snapshot --clean
+
+  release:check:
+    desc: Lint the goreleaser config without building anything.
+    cmds:
+      - goreleaser check
+
   # -------------------------------------------------------------- clean
   clean:
     desc: Remove bin/, tmp/, and the embedded dist directory.

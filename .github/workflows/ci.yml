@@ -1,0 +1,59 @@
+name: CI
+
+# No untrusted input flows into run blocks here — PR title/body/commit
+# messages are never interpolated into shell commands.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+
+      - name: Install UI deps
+        run: cd ui && npm ci
+
+      - name: UI typecheck
+        run: cd ui && npx tsc --noEmit -p tsconfig.app.json
+
+      - name: UI build
+        run: cd ui && npm run build
+
+      - name: Stage UI into embed dir
+        run: |
+          rm -rf internal/ui/dist
+          mkdir -p internal/ui/dist
+          cp -R ui/dist/. internal/ui/dist/
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./...
+
+      - name: Go build (cross-compile sanity)
+        run: |
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -o /tmp/waggle-linux-amd64   ./cmd/waggle
+          CGO_ENABLED=0 GOOS=linux   GOARCH=arm64 go build -o /tmp/waggle-linux-arm64   ./cmd/waggle
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -o /tmp/waggle-darwin-arm64  ./cmd/waggle
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /tmp/waggle-windows-amd64 ./cmd/waggle

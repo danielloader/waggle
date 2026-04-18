@@ -1,5 +1,6 @@
 /bin/
 /tmp/
+/dist/
 /internal/ui/dist/*
 !/internal/ui/dist/.gitkeep
 /ui/node_modules/

@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# Run locally with `task release:snapshot`. Release workflow lives in
+# .github/workflows/release.yml — the UI must be built and copied into
+# internal/ui/dist before goreleaser starts (the Go binary embeds it).
+
+version: 2
+
+project_name: waggle
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: waggle
+    main: ./cmd/waggle
+    binary: waggle
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE*
+
+kos:
+  - id: waggle-docker
+    build: waggle
+    repositories:
+      - ghcr.io/danielloader/waggle
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    tags:
+      - "{{.Version}}"
+      - "{{.Major}}"
+      - "{{.Major}}.{{.Minor}}"
+      - latest
+    bare: true
+    preserve_import_paths: false
+    base_image: gcr.io/distroless/static-debian12:nonroot
+    creation_time: "{{.CommitTimestamp}}"
+    ko_data_creation_time: "{{.CommitTimestamp}}"
+    env:
+      # Container defaults: listen on all interfaces (Docker NAT), write
+      # the SQLite file under /data (expect a volume mount), and skip the
+      # browser-open (no TTY anyway, but explicit beats implicit).
+      - WAGGLE_ADDR=0.0.0.0:4318
+      - WAGGLE_DB=/data/waggle.db
+      - WAGGLE_NO_OPEN=true
+    labels:
+      org.opencontainers.image.source: https://github.com/danielloader/waggle
+      org.opencontainers.image.title: waggle
+      org.opencontainers.image.description: Local OpenTelemetry viewer — OTLP/HTTP ingest into SQLite + Honeycomb-style UI
+      org.opencontainers.image.licenses: MIT
+    annotations:
+      org.opencontainers.image.source: https://github.com/danielloader/waggle
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: danielloader
+    name: waggle
+  prerelease: auto
+  draft: false
+  header: |
+    ## waggle {{ .Tag }}
+
+    Local OpenTelemetry viewer — OTLP/HTTP ingest into SQLite + Honeycomb-style UI.
+  footer: |
+    ### Install
+
+    **Binary** — download from the assets below, extract, and run:
+    ```
+    ./waggle
+    ```
+
+    **Docker**
+    ```
+    docker run --rm -p 4318:4318 -v $(pwd)/data:/data ghcr.io/danielloader/waggle:{{ .Version }}
+    ```
+
+    Then point any OTLP/HTTP exporter at `http://localhost:4318` and open the UI in your browser.
