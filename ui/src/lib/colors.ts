@@ -1,21 +1,22 @@
 /**
- * Deterministic service-name to color mapping. 12 distinguishable hues
- * sampled around the color wheel at a fixed saturation/lightness that works
- * on the warm-neutral surface (matches the Honeycomb light theme).
+ * Deterministic service-name to color mapping. 12 pastel hues — light
+ * enough that dark ink rendered on top (duration labels, etc.) stays
+ * readable without a heavyweight backing, and that the red error bar
+ * still stands out against its service-coloured siblings.
  */
 const PALETTE = [
-  "#3c78d8",
-  "#6aa84f",
-  "#c27ba0",
-  "#e06666",
-  "#f6b26b",
-  "#8e63ce",
-  "#45818e",
-  "#b45f06",
-  "#a64d79",
-  "#674ea7",
-  "#38761d",
-  "#cc0000",
+  "#93c5fd", // blue
+  "#86efac", // green
+  "#fcd34d", // amber
+  "#fca5a5", // red
+  "#d8b4fe", // purple
+  "#fdba74", // orange
+  "#67e8f9", // cyan
+  "#f9a8d4", // pink
+  "#a5b4fc", // indigo
+  "#6ee7b7", // emerald
+  "#c7d2fe", // periwinkle
+  "#fde68a", // warm yellow
 ] as const;
 
 export function serviceColor(service: string): string {

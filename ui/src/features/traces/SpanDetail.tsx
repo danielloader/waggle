@@ -140,17 +140,19 @@ function Header({ span }: { span: SpanOut }) {
         background: "var(--color-surface)",
       }}
     >
-      <div className="flex items-center gap-2">
-        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
-        <span className="text-sm font-semibold truncate">{span.name}</span>
+      <div
+        className="text-xs flex items-center gap-1.5"
+        style={{ color: "var(--color-ink-muted)" }}
+      >
+        <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+        <span className="truncate">{span.service_name}</span>
+        <span>›</span>
       </div>
+      <div className="text-base font-semibold truncate">{span.name}</div>
       <div
         className="text-xs flex flex-wrap items-center gap-x-4 gap-y-1"
         style={{ color: "var(--color-ink-muted)" }}
       >
-        <span>
-          <span className="font-mono">{span.service_name}</span>
-        </span>
         <span>{formatDuration(span.duration_ns)}</span>
         <span className="capitalize">
           status:{" "}
@@ -243,38 +245,40 @@ function FieldsTab({ rows }: { rows: AttrRow[] }) {
           className="bg-transparent outline-none text-sm flex-1"
         />
       </div>
-      <div className="divide-y" style={{ borderColor: "var(--color-border)" }}>
+      <div className="flex flex-col">
         {filtered.map((r) => {
           const canFilter = filterableValue(r) !== null;
           return (
             <div
               key={r.key}
-              className="group flex items-baseline py-1.5 gap-3 border-b"
+              className="group flex flex-col gap-0.5 py-2 border-b"
               style={{ borderColor: "var(--color-border)" }}
             >
-              <div
-                className="text-xs font-mono truncate shrink-0"
-                style={{ width: 160 }}
-              >
+              <div className="flex items-center gap-1">
                 <TypePill type={r.type} />
-                {r.key}
+                <span
+                  className="text-xs font-mono truncate"
+                  style={{ color: "var(--color-ink-muted)" }}
+                >
+                  {r.key}
+                </span>
+                {canFilter && (
+                  <button
+                    type="button"
+                    onClick={() => applyFilter(r)}
+                    className="ml-auto opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:bg-[var(--color-surface-muted)]"
+                    title={`Filter /traces to ${r.key} = ${String(r.value)}`}
+                  >
+                    <FilterIcon
+                      className="w-3 h-3"
+                      style={{ color: "var(--color-accent)" }}
+                    />
+                  </button>
+                )}
               </div>
-              <div className="text-xs font-mono break-all flex-1">
+              <div className="text-xs font-mono break-all">
                 {formatValue(r.value)}
               </div>
-              {canFilter && (
-                <button
-                  type="button"
-                  onClick={() => applyFilter(r)}
-                  className="opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:bg-[var(--color-surface-muted)]"
-                  title={`Filter /traces to ${r.key} = ${String(r.value)}`}
-                >
-                  <FilterIcon
-                    className="w-3 h-3"
-                    style={{ color: "var(--color-accent)" }}
-                  />
-                </button>
-              )}
             </div>
           );
         })}
@@ -494,24 +498,23 @@ function EventDetail({
             className="bg-transparent outline-none text-sm flex-1"
           />
         </div>
-        <div
-          className="divide-y"
-          style={{ borderColor: "var(--color-border)" }}
-        >
+        <div className="flex flex-col">
           {filtered.map((r) => (
             <div
               key={r.key}
-              className="flex items-baseline py-1.5 gap-3 border-b"
+              className="flex flex-col gap-0.5 py-2 border-b"
               style={{ borderColor: "var(--color-border)" }}
             >
-              <div
-                className="text-xs font-mono truncate shrink-0"
-                style={{ width: 160 }}
-              >
+              <div className="flex items-center gap-1">
                 <TypePill type={r.type} />
-                {r.key}
+                <span
+                  className="text-xs font-mono truncate"
+                  style={{ color: "var(--color-ink-muted)" }}
+                >
+                  {r.key}
+                </span>
               </div>
-              <div className="text-xs font-mono break-all flex-1">
+              <div className="text-xs font-mono break-all">
                 {formatValue(r.value)}
               </div>
             </div>

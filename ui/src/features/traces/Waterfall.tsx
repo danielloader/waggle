@@ -8,10 +8,8 @@ import type { TraceModel, WaterfallRow } from "./tree";
 import { isSpanError } from "./tree";
 
 const ROW_HEIGHT = 28;
-// Exported so the trace summary swim-lane can line up its timeline against
-// the waterfall's bars below — any drift looks wrong.
-export const NAME_COL = 360;
-export const DURATION_COL = 90;
+export const NAME_COL = 320;
+export const SERVICE_COL = 160;
 
 interface Props {
   model: TraceModel;
@@ -38,14 +36,15 @@ interface Props {
 
 /**
  * Honeycomb-style trace waterfall. Virtualized — handles multi-thousand-span
- * traces without shipping every row into the DOM. Each row shows:
+ * traces without shipping every row into the DOM. Each row is:
  *
- *   [▸/▾]  ●  name …………………     3.66ms   │ ▬▬▬▬▬ ─ ─ ─ │
+ *   [▸/▾]  ●  name   service.name   3.66ms ▬▬▬▬▬  ─ ─ ─
  *
  * The solid bar is the span's own [start_ns, end_ns] range. When any
  * descendant falls outside that range (apparent clock skew), a dashed
  * extension draws the bar out to the full covered span and a ⚠ icon nudges
- * the reader to notice.
+ * the reader to notice. Duration label floats at the bar's leading edge
+ * Honeycomb-style — no separate duration column.
  */
 export function Waterfall({
   model,
@@ -66,9 +65,6 @@ export function Waterfall({
     overscan: 12,
   });
 
-  // Imperative scroll-into-view. Runs on every rows/target change, so if the
-  // caller uncollapses an ancestor (which grows `rows`), the deferred effect
-  // still picks up and scrolls once the target is in the visible list.
   useEffect(() => {
     if (!scrollToSpanID) return;
     const idx = rows.findIndex((r) => r.span.span_id === scrollToSpanID);
@@ -107,6 +103,7 @@ export function Waterfall({
                 isHighlighted={
                   highlightSpanIDs?.has(row.span.span_id) ?? false
                 }
+                isAltRow={vr.index % 2 === 1}
                 onSelect={onSelect}
                 onToggleCollapse={onToggleCollapse}
                 onSelectEvent={onSelectEvent}
@@ -132,14 +129,17 @@ function TimelineRuler({ traceDurNS }: { traceDurNS: number }) {
         color: "var(--color-ink-muted)",
       }}
     >
-      <div className="shrink-0 px-3 py-1 border-r" style={{ width: NAME_COL, borderColor: "var(--color-border)" }}>
-        Span
+      <div
+        className="shrink-0 px-3 py-1 border-r"
+        style={{ width: NAME_COL, borderColor: "var(--color-border)" }}
+      >
+        name
       </div>
       <div
-        className="shrink-0 px-2 py-1 border-r text-right"
-        style={{ width: DURATION_COL, borderColor: "var(--color-border)" }}
+        className="shrink-0 px-3 py-1 border-r"
+        style={{ width: SERVICE_COL, borderColor: "var(--color-border)" }}
       >
-        Duration
+        Service Name
       </div>
       <div className="flex-1 relative px-2 py-1">
         {ticks.map((t, i) => (
@@ -179,6 +179,7 @@ interface RowProps {
   isSelected: boolean;
   isCollapsed: boolean;
   isHighlighted: boolean;
+  isAltRow: boolean;
   onSelect: (spanID: string) => void;
   onToggleCollapse: (spanID: string) => void;
   onSelectEvent?: (spanID: string, eventIdx: number) => void;
@@ -192,6 +193,7 @@ function Row({
   isSelected,
   isCollapsed,
   isHighlighted,
+  isAltRow,
   onSelect,
   onToggleCollapse,
   onSelectEvent,
@@ -201,9 +203,16 @@ function Row({
   const leftPct = (row.offsetNS / traceDurNS) * 100;
   const widthPct = Math.max((row.durationNS / traceDurNS) * 100, 0.2);
 
-  // Skew extension — drawn on the same track but as a dashed line.
   const extFromPct = ((row.extendedFromNS - traceStartNS) / traceDurNS) * 100;
   const extToPct = ((row.extendedToNS - traceStartNS) / traceDurNS) * 100;
+
+  const barColor = isError ? "var(--color-error)" : color;
+  // Label sits on a lighter shade of the bar's own colour — creates a
+  // subtle contrast patch inside the bar so the numbers are readable
+  // without a hard white backing that would look pasted-on.
+  const labelBg = isError
+    ? "color-mix(in srgb, var(--color-error) 45%, white)"
+    : `color-mix(in srgb, ${color} 55%, white)`;
 
   return (
     <div
@@ -214,12 +223,16 @@ function Row({
       style={{
         top,
         height: ROW_HEIGHT,
+        // Precedence: selection → search highlight → zebra stripe. The
+        // stripe is a subtle tick so the eye can track a long row across
+        // the full-width timeline without losing its place.
         background: isSelected
-          ? "var(--color-surface-muted)"
+          ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
           : isHighlighted
-            ? "rgba(246, 178, 107, 0.18)" // warm pale accent for search hits
-            : undefined,
-        borderLeft: isSelected ? `3px solid ${color}` : "3px solid transparent",
+            ? "rgba(246, 178, 107, 0.18)"
+            : isAltRow
+              ? "var(--color-surface-muted)"
+              : undefined,
       }}
       onClick={() => onSelect(row.span.span_id)}
     >
@@ -267,10 +280,11 @@ function Row({
         )}
       </div>
       <div
-        className="shrink-0 px-2 text-xs tabular-nums text-right"
-        style={{ width: DURATION_COL, color: "var(--color-ink-muted)" }}
+        className="shrink-0 px-3 text-xs truncate"
+        style={{ width: SERVICE_COL, color: "var(--color-ink-muted)" }}
+        title={row.span.service_name}
       >
-        {formatDuration(row.durationNS)}
+        {row.span.service_name}
       </div>
       <div className="flex-1 relative h-full">
         {/* Dashed skew extension — drawn under the solid bar. */}
@@ -286,9 +300,9 @@ function Row({
             }}
           />
         )}
-        {/* Solid own-duration bar. Error spans switch to the error colour
-            outright — easier to spot at a glance on a busy waterfall than
-            a same-coloured bar with a red outline. */}
+        {/* Solid own-duration bar. Errors flip to red outright for
+            glanceability — outline variants disappear into the other bars
+            on a busy waterfall. */}
         <div
           className="absolute rounded-sm"
           style={{
@@ -296,9 +310,26 @@ function Row({
             width: `${widthPct}%`,
             top: 8,
             height: 10,
-            background: isError ? "var(--color-error)" : color,
+            background: barColor,
           }}
         />
+        {/* Duration label at the bar's leading edge. Backed by a lighter
+            shade of the same bar colour so it reads as a native extension
+            of the bar rather than a pasted-on pill. */}
+        <span
+          className="absolute text-[11px] tabular-nums pointer-events-none whitespace-nowrap"
+          style={{
+            left: `${leftPct}%`,
+            top: 5,
+            marginLeft: 2,
+            padding: "0 4px",
+            color: "var(--color-ink)",
+            background: labelBg,
+            borderRadius: 2,
+          }}
+        >
+          {formatDuration(row.durationNS)}
+        </span>
         {/* Span event ticks — positioned on the shared trace timeline, so
             they may fall outside the bar's pixel extent if the SDK
             recorded an event past the reported end_time. Clickable to
@@ -316,7 +347,7 @@ function Row({
               onClick={
                 onSelectEvent
                   ? (e) => {
-                      e.stopPropagation(); // don't re-trigger row onClick
+                      e.stopPropagation();
                       onSelectEvent(row.span.span_id, i);
                     }
                   : undefined
@@ -344,8 +375,6 @@ function EventMarker({
 }) {
   const tooltip = `${name} @ +${offsetLabel}`;
   const color = isException ? "var(--color-error)" : "#1d1d1b";
-  // Visible dot is 8px; the button itself is a 16px transparent hit area
-  // around it so tapping is forgiving on dense waterfalls.
   return (
     <button
       type="button"
