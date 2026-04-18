@@ -29,9 +29,12 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otelmetric "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -41,6 +44,8 @@ func main() {
 		insecure       = flag.Bool("insecure", true, "Use http:// instead of https://")
 		rate           = flag.Float64("rate", 5.0, "Target traces emitted per second")
 		logsRate       = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
+		metricsEnable  = flag.Bool("metrics", true, "Emit demo metrics (requests.total counter + memory.used gauge per service)")
+		metricsRate    = flag.Float64("metrics-rate", 20, "Counter bumps per second across all services (only used when --metrics=true)")
 		jitter         = flag.Float64("jitter", 0.3, "Fraction of the inter-trace period to randomize [0.0–1.0]")
 		duration       = flag.Duration("duration", 0, "How long to run (0 = until Ctrl-C)")
 		servicesFlag   = flag.String("services", "", "Comma-separated service names to emit (default: all templates)")
@@ -110,6 +115,29 @@ func main() {
 			_ = lp.Shutdown(shutdownCtx)
 		}
 	}()
+
+	// Metric providers: one per unique service. Demo instruments
+	// (requests.total counter + memory.used observable gauge) live on
+	// each provider, so the metrics UI has something non-empty to
+	// render alongside traces and logs.
+	var (
+		metricProviders map[string]*sdkmetric.MeterProvider
+		requestCounters map[string]otelmetric.Int64Counter
+	)
+	if *metricsEnable {
+		metricProviders, err = buildMetricProvidersForServices(templates, *endpoint, *insecure)
+		if err != nil {
+			log.Fatalf("build metric providers: %v", err)
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for _, mp := range metricProviders {
+				_ = mp.Shutdown(shutdownCtx)
+			}
+		}()
+		requestCounters = registerDemoMetrics(metricProviders)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -181,6 +209,36 @@ func main() {
 		}
 	}()
 
+	// Metric counter-bump loop. Gauge values come from a callback on
+	// the observable gauge and don't need our help. Counter bumps
+	// happen here at --metrics-rate/sec, spread round-robin across
+	// services. Method attribute rotates GET/POST/PUT/DELETE so the
+	// chart has multiple series to render.
+	if *metricsEnable && *metricsRate > 0 && len(requestCounters) > 0 {
+		services := make([]string, 0, len(requestCounters))
+		for svc := range requestCounters {
+			services = append(services, svc)
+		}
+		methods := []string{"GET", "POST", "PUT", "DELETE"}
+		metricsPeriod := time.Duration(float64(time.Second) / *metricsRate)
+		go func() {
+			i := 0
+			for {
+				sleep := jitterDuration(metricsPeriod, *jitter)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(sleep):
+				}
+				svc := services[i%len(services)]
+				method := methods[rand.IntN(len(methods))]
+				requestCounters[svc].Add(ctx, 1,
+					otelmetric.WithAttributes(attribute.String("http.method", method)))
+				i++
+			}
+		}()
+	}
+
 	// Log emitter. Independent cadence from traces — one goroutine loop is
 	// plenty because each emit is just a record append to the batch
 	// processor.
@@ -223,6 +281,99 @@ func jitterDuration(base time.Duration, jitter float64) time.Duration {
 		factor = 0.05 // clamp so we don't spin
 	}
 	return time.Duration(float64(base) * factor)
+}
+
+// buildMetricProvidersForServices builds one MeterProvider per unique
+// service in the trace-template set. Uses a PeriodicReader so the
+// exporter pushes on a short fixed interval, matching the cadence of
+// the log + trace exporters.
+func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdkmetric.MeterProvider, error) {
+	byService := map[string]*sdkmetric.MeterProvider{}
+	services := map[string]struct{}{}
+	for _, t := range tpls {
+		services[t.Service] = struct{}{}
+	}
+	for service := range services {
+		opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
+		if insecure {
+			opts = append(opts, otlpmetrichttp.WithInsecure())
+		}
+		exp, err := otlpmetrichttp.New(context.Background(), opts...)
+		if err != nil {
+			return nil, fmt.Errorf("metric exporter for %s: %w", service, err)
+		}
+		res, err := resource.New(context.Background(), resource.WithAttributes(
+			attribute.String("service.name", service),
+			attribute.String("service.version", "loadgen-0.1.0"),
+			attribute.String("deployment.environment", "dev"),
+			attribute.String("telemetry.sdk.name", "waggle-loadgen"),
+		))
+		if err != nil {
+			return nil, fmt.Errorf("resource for %s: %w", service, err)
+		}
+		byService[service] = sdkmetric.NewMeterProvider(
+			sdkmetric.WithResource(res),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp,
+				sdkmetric.WithInterval(time.Second),
+			)),
+		)
+	}
+	return byService, nil
+}
+
+// registerDemoMetrics creates the default set of instruments on every
+// service-scoped MeterProvider and returns the counter handles so the
+// main loop can bump them. Each provider gets:
+//   - requests.total (Int64Counter) — cumulative counter, bumped by the
+//     main loop with a rotating http.method attribute.
+//   - memory.used_bytes (Float64ObservableGauge) — callback-driven gauge
+//     that wobbles around a per-service baseline so the chart has a
+//     non-flat line out of the box.
+func registerDemoMetrics(providers map[string]*sdkmetric.MeterProvider) map[string]otelmetric.Int64Counter {
+	counters := map[string]otelmetric.Int64Counter{}
+	for svc, mp := range providers {
+		meter := mp.Meter("loadgen")
+		counter, err := meter.Int64Counter("requests.total",
+			otelmetric.WithUnit("1"),
+			otelmetric.WithDescription("cumulative HTTP requests handled"),
+		)
+		if err != nil {
+			log.Printf("counter for %s: %v", svc, err)
+			continue
+		}
+		counters[svc] = counter
+
+		// The gauge baseline is hashed from the service name so
+		// different services sit at visibly different levels. Wobble
+		// is ±10% via rand.Float64().
+		baseline := 50_000_000.0 + float64(fnv32(svc)%200_000_000)
+		_, err = meter.Float64ObservableGauge("memory.used_bytes",
+			otelmetric.WithUnit("By"),
+			otelmetric.WithDescription("process resident memory in bytes"),
+			otelmetric.WithFloat64Callback(func(_ context.Context, obs otelmetric.Float64Observer) error {
+				wobble := 1 + (rand.Float64()-0.5)*0.2
+				obs.Observe(baseline*wobble,
+					otelmetric.WithAttributes(attribute.String("process", "main")))
+				return nil
+			}),
+		)
+		if err != nil {
+			log.Printf("gauge for %s: %v", svc, err)
+		}
+	}
+	return counters
+}
+
+// fnv32 is a tiny deterministic hash used to spread the gauge baseline
+// across services. Not cryptographic; just gives each service.name a
+// stable seed for its memory-used starting point.
+func fnv32(s string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return h
 }
 
 // buildLogProvidersForServices builds one LoggerProvider per trace-template
