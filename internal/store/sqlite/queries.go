@@ -1266,6 +1266,81 @@ func coerceForJSON(v any) any {
 	}
 }
 
+// ListMetrics backs the /api/metrics name picker. One row per unique
+// (name, kind) tuple — two instruments sharing a name but different
+// kinds (rare but legal in OTLP) show up separately.
+func (s *Store) ListMetrics(ctx context.Context, f store.MetricFilter) ([]store.MetricSummary, error) {
+	limit := clampLimit(f.Limit, 200, 500)
+	var b strings.Builder
+	b.WriteString(`SELECT name, kind,
+		COALESCE(MAX(unit), '') AS unit,
+		COALESCE(MAX(description), '') AS description,
+		COUNT(*) AS series_count
+		FROM metric_series WHERE 1=1`)
+	args := []any{}
+	if f.Service != "" {
+		b.WriteString(" AND service_name = ?")
+		args = append(args, f.Service)
+	}
+	if f.Prefix != "" {
+		b.WriteString(" AND name LIKE ? || '%'")
+		args = append(args, f.Prefix)
+	}
+	b.WriteString(" GROUP BY name, kind ORDER BY name ASC LIMIT ?")
+	args = append(args, limit)
+	rows, err := s.reader.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MetricSummary
+	for rows.Next() {
+		var m store.MetricSummary
+		if err := rows.Scan(&m.Name, &m.Kind, &m.Unit, &m.Description, &m.SeriesCount); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListMetricSeries returns the individual (attribute-set) series for a
+// metric name — the "one row per line on the chart" view.
+func (s *Store) ListMetricSeries(ctx context.Context, f store.MetricSeriesFilter) ([]store.MetricSeriesSummary, error) {
+	if f.Name == "" {
+		return nil, errors.New("metric name is required")
+	}
+	limit := clampLimit(f.Limit, 200, 1000)
+	var b strings.Builder
+	b.WriteString(`SELECT series_id, service_name, name, kind,
+		COALESCE(unit, ''), COALESCE(temporality, ''),
+		attributes, first_seen_ns, last_seen_ns
+		FROM metric_series WHERE name = ?`)
+	args := []any{f.Name}
+	if f.Service != "" {
+		b.WriteString(" AND service_name = ?")
+		args = append(args, f.Service)
+	}
+	b.WriteString(" ORDER BY last_seen_ns DESC LIMIT ?")
+	args = append(args, limit)
+	rows, err := s.reader.QueryContext(ctx, b.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.MetricSeriesSummary
+	for rows.Next() {
+		var m store.MetricSeriesSummary
+		if err := rows.Scan(&m.SeriesID, &m.ServiceName, &m.Name, &m.Kind,
+			&m.Unit, &m.Temporality, &m.AttributesJSON,
+			&m.FirstSeenNS, &m.LastSeenNS); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {

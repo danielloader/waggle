@@ -18,8 +18,9 @@ import (
 type Dataset string
 
 const (
-	DatasetSpans Dataset = "spans"
-	DatasetLogs  Dataset = "logs"
+	DatasetSpans   Dataset = "spans"
+	DatasetLogs    Dataset = "logs"
+	DatasetMetrics Dataset = "metrics"
 )
 
 // Query is the wire-level structured query.

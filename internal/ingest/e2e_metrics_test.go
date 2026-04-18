@@ -333,3 +333,169 @@ func indexString(s, sub string) int {
 	}
 	return -1
 }
+
+// ---------------------------------------------------------------------------
+// /api/metrics + /api/metrics/{name}/series
+// ---------------------------------------------------------------------------
+
+func TestE2E_MetricsAPIListing(t *testing.T) {
+	f := newE2EFixture(t)
+	defer f.close()
+
+	mp := f.meterProvider("picker-svc")
+	meter := mp.Meter("e2e")
+
+	reqs, _ := meter.Int64Counter("requests.total", metric.WithUnit("1"),
+		metric.WithDescription("total HTTP requests"))
+	reqs.Add(context.Background(), 1, metric.WithAttributes(attribute.String("route", "/a")))
+	reqs.Add(context.Background(), 1, metric.WithAttributes(attribute.String("route", "/b")))
+
+	_, err := meter.Float64ObservableGauge("memory.used", metric.WithUnit("By"),
+		metric.WithFloat64Callback(func(_ context.Context, obs metric.Float64Observer) error {
+			obs.Observe(1024)
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	f.shutdownMeter(mp)
+	f.waitForMetricSeries("picker-svc", 3) // 2 routes on requests + 1 gauge
+
+	var listing struct {
+		Metrics []struct {
+			Name        string `json:"name"`
+			Kind        string `json:"kind"`
+			Unit        string `json:"unit"`
+			Description string `json:"description"`
+			SeriesCount int64  `json:"series_count"`
+		} `json:"metrics"`
+	}
+	if err := f.getJSON("/api/metrics?service=picker-svc", &listing); err != nil {
+		t.Fatalf("GET /api/metrics: %v", err)
+	}
+	byName := map[string]struct {
+		Kind        string
+		Unit        string
+		Count       int64
+	}{}
+	for _, m := range listing.Metrics {
+		byName[m.Name] = struct {
+			Kind  string
+			Unit  string
+			Count int64
+		}{m.Kind, m.Unit, m.SeriesCount}
+	}
+	if e := byName["requests.total"]; e.Kind != "sum" || e.Count != 2 {
+		t.Errorf("requests.total: want sum / series_count=2, got %+v", e)
+	}
+	if e := byName["memory.used"]; e.Kind != "gauge" || e.Unit != "By" {
+		t.Errorf("memory.used: want gauge unit=By, got %+v", e)
+	}
+
+	// /api/metrics/{name}/series
+	var series struct {
+		Series []struct {
+			SeriesID    int64  `json:"series_id"`
+			ServiceName string `json:"service_name"`
+			Kind        string `json:"kind"`
+			Attributes  string `json:"attributes"`
+		} `json:"series"`
+	}
+	if err := f.getJSON("/api/metrics/requests.total/series?service=picker-svc", &series); err != nil {
+		t.Fatalf("series endpoint: %v", err)
+	}
+	if len(series.Series) != 2 {
+		t.Fatalf("want 2 series, got %d (%+v)", len(series.Series), series.Series)
+	}
+	for _, s := range series.Series {
+		if s.Kind != "sum" {
+			t.Errorf("series kind: want sum, got %q", s.Kind)
+		}
+		if s.ServiceName != "picker-svc" {
+			t.Errorf("service_name: want picker-svc, got %q", s.ServiceName)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /api/query with dataset=metrics — the shared query path works
+// against the metric_points + metric_series join.
+// ---------------------------------------------------------------------------
+
+func TestE2E_MetricsQuery(t *testing.T) {
+	f := newE2EFixture(t)
+	defer f.close()
+
+	mp := f.meterProvider("q-svc")
+	counter, err := mp.Meter("e2e").Int64Counter("events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		counter.Add(context.Background(), 1, metric.WithAttributes(attribute.String("k", "a")))
+	}
+	for i := 0; i < 3; i++ {
+		counter.Add(context.Background(), 1, metric.WithAttributes(attribute.String("k", "b")))
+	}
+	f.shutdownMeter(mp)
+	f.waitForMetricSeries("q-svc", 2)
+	f.waitForMetricPoints("q-svc", "events", 2)
+
+	now := time.Now()
+	from := now.Add(-5 * time.Minute)
+
+	// Aggregated MAX(value) group-by k — cumulative sum instruments
+	// report their total-to-date, so MAX over a window reflects the
+	// last-seen cumulative level per series. Should equal the total
+	// we added.
+	res, err := f.runQueryAPI(map[string]any{
+		"dataset":    "metrics",
+		"time_range": map[string]any{"from": rfc3339(from), "to": rfc3339(now.Add(5 * time.Second))},
+		"select":     []map[string]any{{"op": "max", "field": "value"}},
+		"where": []map[string]any{
+			{"field": "service.name", "op": "=", "value": "q-svc"},
+			{"field": "name", "op": "=", "value": "events"},
+		},
+		"group_by": []string{"k"},
+	})
+	if err != nil {
+		t.Fatalf("metrics query: %v", err)
+	}
+	got := map[string]float64{}
+	kIdx := res.columnIdx("k")
+	maxIdx := res.columnIdx("max_value")
+	for _, row := range res.Rows {
+		key, _ := row[kIdx].(string)
+		v, _ := toFloat(row[maxIdx])
+		got[key] = v
+	}
+	if got["a"] != 5 {
+		t.Errorf("max(value) where k=a: want 5, got %v", got["a"])
+	}
+	if got["b"] != 3 {
+		t.Errorf("max(value) where k=b: want 3, got %v", got["b"])
+	}
+
+	// Raw-rows mode (empty SELECT) — each point comes back with
+	// service_name, name, kind, value, and the series attributes blob.
+	rawRes, err := f.runQueryAPI(map[string]any{
+		"dataset":    "metrics",
+		"time_range": map[string]any{"from": rfc3339(from), "to": rfc3339(now.Add(5 * time.Second))},
+		"select":     []map[string]any{},
+		"where":      []map[string]any{{"field": "service.name", "op": "=", "value": "q-svc"}},
+		"limit":      50,
+	})
+	if err != nil {
+		t.Fatalf("raw metrics query: %v", err)
+	}
+	if len(rawRes.Rows) == 0 {
+		t.Fatal("raw metrics query returned no rows")
+	}
+	// Expect the five shape columns documented in rawColumnsFor.
+	for _, c := range []string{"time_ns", "service_name", "name", "kind", "value", "attributes"} {
+		if rawRes.columnIdx(c) < 0 {
+			t.Errorf("raw metric columns missing %q (got %+v)", c, rawRes.Columns)
+		}
+	}
+}
