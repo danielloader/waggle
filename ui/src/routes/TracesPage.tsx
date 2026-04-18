@@ -13,6 +13,7 @@ import {
   runQuery,
   type QuerySearch,
 } from "../lib/query";
+import { useRefreshPersistence } from "../lib/refreshPersistence";
 import { tracesRoute } from "../router";
 
 // See LogsPage — scroll distance over which the accordions collapse.
@@ -55,6 +56,8 @@ export function TracesPage() {
 
   const setSearch = (next: QuerySearch) =>
     navigate({ to: "/traces", search: next as unknown as Record<string, unknown> });
+
+  useRefreshPersistence(search, setSearch);
 
   const chart = useQuery({
     queryKey: ["query", "spans", search],
