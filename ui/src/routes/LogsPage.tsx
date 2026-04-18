@@ -5,7 +5,6 @@ import { Accordion } from "../components/ui/Accordion";
 import { DefinePanel } from "../features/query/DefinePanel";
 import { QueryChart } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
-import { LogSearchInput } from "../features/query/LogSearchInput";
 import {
   bucketMsFor,
   buildCountQuery,
@@ -114,12 +113,6 @@ export function LogsPage() {
           search={search}
           onTabChange={(tab) => setSearch({ ...search, tab })}
           onExploreScrollY={handleExploreScrollY}
-          rightSlot={
-            <LogSearchInput
-              value={search.q}
-              onChange={(q) => setSearch({ ...search, q })}
-            />
-          }
         />
       </div>
     </div>
@@ -132,6 +125,5 @@ function querySummary(search: QuerySearch): string {
   const parts: string[] = [];
   if (search.where.length) parts.push(`${search.where.length} filter${search.where.length === 1 ? "" : "s"}`);
   if (search.group_by.length) parts.push(`group by ${search.group_by.join(", ")}`);
-  if (search.q.trim()) parts.push(`q: "${search.q.trim()}"`);
   return parts.join(" · ");
 }

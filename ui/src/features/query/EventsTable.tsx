@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import type {
   Dataset,
-  Filter,
   QueryResult,
   QuerySearch,
 } from "../../lib/query";
@@ -36,14 +35,9 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
       search.range,
       search.from,
       search.to,
-      search.q,
     ],
     queryFn: ({ signal }) => {
       const resolved = resolveSearchRange(search);
-      const filters: Filter[] = [...search.where];
-      if (dataset === "logs" && search.q.trim()) {
-        filters.push({ field: "body", op: "contains", value: search.q.trim() });
-      }
       return runQuery(
         {
           dataset,
@@ -52,7 +46,7 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
             to: new Date(resolved.toMs).toISOString(),
           },
           select: [], // raw-rows mode
-          where: filters,
+          where: search.where,
           limit: 500,
         },
         signal,

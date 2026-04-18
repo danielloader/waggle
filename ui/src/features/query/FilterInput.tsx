@@ -96,7 +96,7 @@ export function FilterInput({
   const suggestions = useMemo((): Suggestion[] => {
     switch (parsed.phase) {
       case "field":
-        return buildFieldSuggestions(fields.data?.fields ?? [], parsed.partial);
+        return buildFieldSuggestions(dataset, fields.data?.fields ?? [], parsed.partial);
       case "op":
         return FILTER_OP_DISPLAY
           .filter((o) => o.startsWith(parsed.partial))
@@ -234,22 +234,38 @@ interface Suggestion {
   hint?: string;
 }
 
-const SYNTHETIC_FIELDS: { key: string; type: string }[] = [
-  { key: "is_root", type: "bool" },
-  { key: "error", type: "bool" },
-  { key: "trace_id", type: "string" },
-  { key: "parent_span_id", type: "string" },
-  { key: "duration_ns", type: "int" },
-];
+// Synthetic / built-in fields, scoped per dataset. These mirror the keys
+// the Go query builder resolves natively via realColumn(), so offering
+// them first in autocomplete gives users a fast path to the common ones
+// without having to know the attribute-key catalog.
+const SYNTHETIC_FIELDS_BY_DATASET: Record<Dataset, { key: string; type: string }[]> = {
+  spans: [
+    { key: "is_root", type: "bool" },
+    { key: "error", type: "bool" },
+    { key: "trace_id", type: "string" },
+    { key: "parent_span_id", type: "string" },
+    { key: "duration_ns", type: "int" },
+    { key: "duration_ms", type: "int" },
+  ],
+  logs: [
+    { key: "body", type: "string" },
+    { key: "severity_text", type: "string" },
+    { key: "severity_number", type: "int" },
+    { key: "error", type: "bool" },
+    { key: "trace_id", type: "string" },
+    { key: "time_ns", type: "time" },
+  ],
+};
 
 function buildFieldSuggestions(
+  dataset: Dataset,
   catalog: FieldInfo[],
   prefix: string,
 ): Suggestion[] {
   const seen = new Set<string>();
   const out: Suggestion[] = [];
   // Synthetic / built-in fields first, then user-attribute keys.
-  for (const f of SYNTHETIC_FIELDS) {
+  for (const f of SYNTHETIC_FIELDS_BY_DATASET[dataset]) {
     if (!seen.has(f.key) && f.key.startsWith(prefix)) {
       out.push({ value: f.key, label: f.key, hint: f.type });
       seen.add(f.key);
