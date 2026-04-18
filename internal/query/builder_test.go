@@ -594,3 +594,37 @@ func TestBuild_ContainsFilter(t *testing.T) {
 		t.Errorf("contains arg wrapping: want %%refused%%, got %v", got)
 	}
 }
+
+// duration_ms is a synthetic field derived from duration_ns / 1_000_000. It
+// should compile as an expression (not a raw column), and the percentile
+// aggregation's output alias should use the user-supplied field name so the
+// column shows up as p99_duration_ms rather than p99_duration_ns.
+func TestBuild_DurationMSField(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetSpans,
+		TimeRange: tr(),
+		Select: []Aggregation{
+			{Op: OpP99, Field: "duration_ms"},
+		},
+		Where:   []Filter{{Field: "duration_ms", Op: FilterGt, Value: 100}},
+		GroupBy: []string{"service.name"},
+		OrderBy: []Order{{Field: "p99_duration_ms", Dir: "desc"}},
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"percentile((duration_ns / 1000000), 0.99) AS p99_duration_ms",
+		"(duration_ns / 1000000) > ?",
+		"ORDER BY p99_duration_ms DESC",
+	}
+	for _, s := range want {
+		if !strings.Contains(c.SQL, s) {
+			t.Errorf("SQL missing %q; got:\n%s", s, c.SQL)
+		}
+	}
+}
