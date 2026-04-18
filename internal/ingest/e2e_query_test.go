@@ -346,17 +346,15 @@ func TestE2E_ListTracesPagination(t *testing.T) {
 	tp := f.tracerProvider("page-svc")
 	tr := tp.Tracer("e2e")
 
-	// 30 independent traces. A small sleep between each one keeps their
-	// start_time_ns values strictly unique — the cursor the ListTraces
-	// endpoint hands out is just that timestamp, so two traces sharing
-	// one would cause a page boundary to skip a row. If / when the store
-	// composes a tie-breaker into the cursor (e.g. trace_id), this sleep
-	// can go.
+	// 30 independent traces emitted in a tight loop — deliberately no
+	// sleep between them, so several will share a start_time_ns at
+	// microsecond resolution. The cursor must compose a tie-breaker
+	// (trace_id) so none of those tied rows are skipped at a page
+	// boundary.
 	const total = 30
 	for i := 0; i < total; i++ {
 		_, span := tr.Start(context.Background(), "op", trace.WithNewRoot())
 		span.End()
-		time.Sleep(200 * time.Microsecond)
 	}
 	f.shutdownTracer(tp)
 	f.waitForSpanCount("page-svc", total)

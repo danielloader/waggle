@@ -291,19 +291,20 @@ func (s *Store) ListTraces(ctx context.Context, f store.TraceFilter) ([]store.Tr
 		b.WriteString(" AND start_time_ns < ?")
 		args = append(args, f.ToNS)
 	}
-	if f.Cursor != "" {
-		cursorNS, err := strconv.ParseInt(f.Cursor, 10, 64)
-		if err == nil {
-			b.WriteString(" AND start_time_ns < ?")
-			args = append(args, cursorNS)
+	if cursorNS, tidHex, ok := parseCompositeCursor(f.Cursor); ok {
+		// Composite cursor with trace_id as the tie-breaker — no row is
+		// ever skipped when multiple roots share start_time_ns.
+		if tid, err := hex.DecodeString(tidHex); err == nil {
+			b.WriteString(" AND (start_time_ns < ? OR (start_time_ns = ? AND trace_id < ?))")
+			args = append(args, cursorNS, cursorNS, tid)
 		}
 	}
-	b.WriteString(` ORDER BY start_time_ns DESC LIMIT ?)
+	b.WriteString(` ORDER BY start_time_ns DESC, trace_id DESC LIMIT ?)
 		SELECT r.trace_id, r.service_name, r.name, r.start_time_ns,
 		  (r.end_time_ns - r.start_time_ns) AS duration_ns,
 		  (SELECT COUNT(*) FROM spans s WHERE s.trace_id = r.trace_id) AS span_count,
 		  COALESCE((SELECT 1 FROM spans s WHERE s.trace_id = r.trace_id AND s.status_code = 2 LIMIT 1), 0) AS has_error
-		FROM roots r ORDER BY r.start_time_ns DESC`)
+		FROM roots r ORDER BY r.start_time_ns DESC, r.trace_id DESC`)
 	args = append(args, limit)
 
 	if f.HasError != nil {
@@ -345,9 +346,34 @@ func (s *Store) ListTraces(ctx context.Context, f store.TraceFilter) ([]store.Tr
 
 	cursor := ""
 	if len(out) == limit {
-		cursor = strconv.FormatInt(out[len(out)-1].StartTimeNS, 10)
+		last := out[len(out)-1]
+		cursor = encodeCompositeCursor(last.StartTimeNS, last.TraceID)
 	}
 	return out, cursor, nil
+}
+
+// parseCompositeCursor decodes a "primary:secondary" cursor. Primary is
+// always an int64 timestamp; secondary is a free-form string tag (hex
+// trace_id for traces, log_id for logs). Malformed cursors are ignored
+// (ok=false) so the caller treats it as no cursor and returns the first
+// page — same as an empty string.
+func parseCompositeCursor(s string) (primary int64, secondary string, ok bool) {
+	if s == "" {
+		return 0, "", false
+	}
+	primStr, sec, found := strings.Cut(s, ":")
+	if !found || sec == "" {
+		return 0, "", false
+	}
+	n, err := strconv.ParseInt(primStr, 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
+	return n, sec, true
+}
+
+func encodeCompositeCursor(primary int64, secondary string) string {
+	return strconv.FormatInt(primary, 10) + ":" + secondary
 }
 
 func (s *Store) GetTrace(ctx context.Context, traceIDHex string) (store.TraceDetail, error) {
@@ -812,20 +838,22 @@ func (s *Store) SearchLogs(ctx context.Context, f store.LogFilter) ([]store.LogO
 		}
 		args = append(args, f.ToNS)
 	}
-	if f.Cursor != "" {
-		if cursorNS, err := strconv.ParseInt(f.Cursor, 10, 64); err == nil {
+	if cursorNS, logIDStr, ok := parseCompositeCursor(f.Cursor); ok {
+		if logID, err := strconv.ParseInt(logIDStr, 10, 64); err == nil {
+			logIDCol := "log_id"
+			timeCol := "time_ns"
 			if f.Query != "" {
-				b.WriteString(" AND l.time_ns < ?")
-			} else {
-				b.WriteString(" AND time_ns < ?")
+				logIDCol = "l.log_id"
+				timeCol = "l.time_ns"
 			}
-			args = append(args, cursorNS)
+			fmt.Fprintf(&b, " AND (%s < ? OR (%s = ? AND %s < ?))", timeCol, timeCol, logIDCol)
+			args = append(args, cursorNS, cursorNS, logID)
 		}
 	}
 	if f.Query != "" {
-		b.WriteString(" ORDER BY l.time_ns DESC LIMIT ?")
+		b.WriteString(" ORDER BY l.time_ns DESC, l.log_id DESC LIMIT ?")
 	} else {
-		b.WriteString(" ORDER BY time_ns DESC LIMIT ?")
+		b.WriteString(" ORDER BY time_ns DESC, log_id DESC LIMIT ?")
 	}
 	args = append(args, limit)
 
@@ -861,7 +889,8 @@ func (s *Store) SearchLogs(ctx context.Context, f store.LogFilter) ([]store.LogO
 
 	cursor := ""
 	if len(out) == limit {
-		cursor = strconv.FormatInt(out[len(out)-1].TimeNS, 10)
+		last := out[len(out)-1]
+		cursor = encodeCompositeCursor(last.TimeNS, strconv.FormatInt(last.LogID, 10))
 	}
 	return out, cursor, nil
 }
