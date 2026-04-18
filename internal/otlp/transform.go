@@ -10,6 +10,7 @@ import (
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
@@ -35,14 +36,29 @@ func TransformResourceLogs(batches []*logspb.ResourceLogs) store.Batch {
 	return t.finish()
 }
 
+// TransformResourceMetrics converts ResourceMetrics into a store.Batch.
+// v1 writes Sum + Gauge data points into metric_series + metric_points;
+// histogram / exp-histogram / summary instruments are decoded (so the
+// catalog knows about them) but their data points are currently dropped
+// because the sibling tables for distributions aren't live yet.
+func TransformResourceMetrics(batches []*metricspb.ResourceMetrics) store.Batch {
+	t := newTransformer()
+	for _, rm := range batches {
+		t.ingestResourceMetrics(rm)
+	}
+	return t.finish()
+}
+
 type transformer struct {
-	now        int64
-	resources  map[uint64]store.Resource
-	scopes     map[uint64]store.Scope
-	spans      []store.Span
-	logs       []store.LogRecord
-	attrKeys   map[attrKeyID]*store.AttrKeyDelta
-	attrValues map[attrValueID]*store.AttrValueDelta
+	now          int64
+	resources    map[uint64]store.Resource
+	scopes       map[uint64]store.Scope
+	spans        []store.Span
+	logs         []store.LogRecord
+	metricSeries map[store.MetricSeriesRef]store.MetricSeries
+	metricPoints []store.MetricPoint
+	attrKeys     map[attrKeyID]*store.AttrKeyDelta
+	attrValues   map[attrValueID]*store.AttrValueDelta
 }
 
 type attrKeyID struct {
@@ -61,11 +77,12 @@ type attrValueID struct {
 
 func newTransformer() *transformer {
 	return &transformer{
-		now:        time.Now().UnixNano(),
-		resources:  map[uint64]store.Resource{},
-		scopes:     map[uint64]store.Scope{},
-		attrKeys:   map[attrKeyID]*store.AttrKeyDelta{},
-		attrValues: map[attrValueID]*store.AttrValueDelta{},
+		now:          time.Now().UnixNano(),
+		resources:    map[uint64]store.Resource{},
+		scopes:       map[uint64]store.Scope{},
+		metricSeries: map[store.MetricSeriesRef]store.MetricSeries{},
+		attrKeys:     map[attrKeyID]*store.AttrKeyDelta{},
+		attrValues:   map[attrValueID]*store.AttrValueDelta{},
 	}
 }
 
@@ -79,6 +96,10 @@ func (t *transformer) finish() store.Batch {
 	}
 	b.Spans = t.spans
 	b.Logs = t.logs
+	for _, s := range t.metricSeries {
+		b.MetricSeries = append(b.MetricSeries, s)
+	}
+	b.MetricPoints = t.metricPoints
 	for _, d := range t.attrKeys {
 		b.AttrKeys = append(b.AttrKeys, *d)
 	}
@@ -229,6 +250,133 @@ func (t *transformer) ingestLog(lr *logspb.LogRecord, resID, scopeID uint64, ser
 	t.logs = append(t.logs, row)
 	t.noteAttrKeys("log", service, lr.Attributes)
 	t.noteAttrValues("log", service, lr.Attributes)
+}
+
+// ingestResourceMetrics walks a ResourceMetrics envelope, registers the
+// resource + scopes, and routes each Metric to the per-kind decoder.
+// Histogram / ExpHistogram / Summary metrics are catalogued (so their
+// series keys appear in the attribute catalog) but their data points
+// are not yet written — the sibling tables for distributions land in a
+// later stage; see plans/metrics.md §4.
+func (t *transformer) ingestResourceMetrics(rm *metricspb.ResourceMetrics) {
+	resID, service := t.registerResource(rm.Resource)
+	for _, sm := range rm.ScopeMetrics {
+		scopeID := t.registerScope(sm.Scope)
+		for _, m := range sm.Metrics {
+			t.ingestMetric(m, resID, scopeID, service)
+		}
+	}
+}
+
+func (t *transformer) ingestMetric(
+	m *metricspb.Metric, resID, scopeID uint64, service string,
+) {
+	switch data := m.Data.(type) {
+	case *metricspb.Metric_Sum:
+		kind := "sum"
+		temp := temporalityString(data.Sum.GetAggregationTemporality())
+		mono := data.Sum.GetIsMonotonic()
+		for _, p := range data.Sum.GetDataPoints() {
+			t.ingestNumberPoint(m, kind, temp, &mono, p, resID, scopeID, service)
+		}
+	case *metricspb.Metric_Gauge:
+		for _, p := range data.Gauge.GetDataPoints() {
+			t.ingestNumberPoint(m, "gauge", "", nil, p, resID, scopeID, service)
+		}
+	case *metricspb.Metric_Histogram:
+		// Catalogue only — see stages 4–5.
+		temp := temporalityString(data.Histogram.GetAggregationTemporality())
+		for _, p := range data.Histogram.GetDataPoints() {
+			t.catalogueSeries(m, "histogram", temp, nil, p.Attributes,
+				resID, scopeID, service)
+		}
+	case *metricspb.Metric_ExponentialHistogram:
+		temp := temporalityString(data.ExponentialHistogram.GetAggregationTemporality())
+		for _, p := range data.ExponentialHistogram.GetDataPoints() {
+			t.catalogueSeries(m, "exp_histogram", temp, nil, p.Attributes,
+				resID, scopeID, service)
+		}
+	case *metricspb.Metric_Summary:
+		for _, p := range data.Summary.GetDataPoints() {
+			t.catalogueSeries(m, "summary", "", nil, p.Attributes,
+				resID, scopeID, service)
+		}
+	}
+}
+
+// ingestNumberPoint handles Sum + Gauge data points — both represented
+// by metricspb.NumberDataPoint. Writes a series row + a scalar point.
+func (t *transformer) ingestNumberPoint(
+	m *metricspb.Metric, kind, temporality string, monotonic *bool,
+	p *metricspb.NumberDataPoint,
+	resID, scopeID uint64, service string,
+) {
+	ref := t.catalogueSeries(m, kind, temporality, monotonic, p.Attributes,
+		resID, scopeID, service)
+
+	var value float64
+	switch v := p.Value.(type) {
+	case *metricspb.NumberDataPoint_AsDouble:
+		value = v.AsDouble
+	case *metricspb.NumberDataPoint_AsInt:
+		value = float64(v.AsInt)
+	default:
+		return
+	}
+	t.metricPoints = append(t.metricPoints, store.MetricPoint{
+		SeriesRef:   ref,
+		TimeNS:      int64(p.TimeUnixNano),
+		StartTimeNS: int64(p.StartTimeUnixNano),
+		Value:       value,
+	})
+}
+
+// catalogueSeries upserts the (resource, scope, name, attrs) row into
+// the per-batch metricSeries map and returns the ref so the caller can
+// emit points. Also notes each attribute key/value under the "metric"
+// signal so `/api/fields?dataset=metric` has something to serve.
+func (t *transformer) catalogueSeries(
+	m *metricspb.Metric, kind, temporality string, monotonic *bool,
+	attrs []*commonpb.KeyValue,
+	resID, scopeID uint64, service string,
+) store.MetricSeriesRef {
+	attrsJSON := attrsToJSON(attrs)
+	ref := store.MetricSeriesRef{
+		ResourceID: resID, ScopeID: scopeID,
+		Name: m.Name, AttributesJSON: attrsJSON,
+	}
+	if existing, ok := t.metricSeries[ref]; ok {
+		existing.LastSeenNS = t.now
+		t.metricSeries[ref] = existing
+	} else {
+		t.metricSeries[ref] = store.MetricSeries{
+			ResourceID:     resID,
+			ScopeID:        scopeID,
+			ServiceName:    service,
+			Name:           m.Name,
+			Description:    m.Description,
+			Unit:           m.Unit,
+			Kind:           kind,
+			Temporality:    temporality,
+			Monotonic:      monotonic,
+			AttributesJSON: attrsJSON,
+			FirstSeenNS:    t.now,
+			LastSeenNS:     t.now,
+		}
+	}
+	t.noteAttrKeys("metric", service, attrs)
+	t.noteAttrValues("metric", service, attrs)
+	return ref
+}
+
+func temporalityString(t metricspb.AggregationTemporality) string {
+	switch t {
+	case metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA:
+		return "delta"
+	case metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE:
+		return "cumulative"
+	}
+	return ""
 }
 
 // noteAttrKeys registers each (key, valueType) observation for the catalog.

@@ -10,6 +10,7 @@ import (
 
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 
 	"github.com/danielloader/waggle/internal/otlp"
 )
@@ -24,10 +25,11 @@ func NewHandler(w *Writer, log *slog.Logger) *Handler {
 	return &Handler{writer: w, log: log}
 }
 
-// Mount registers POST /v1/traces and POST /v1/logs on the given mux.
+// Mount registers POST /v1/{traces,logs,metrics} on the given mux.
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/traces", h.handleTraces)
 	mux.HandleFunc("POST /v1/logs", h.handleLogs)
+	mux.HandleFunc("POST /v1/metrics", h.handleMetrics)
 }
 
 func (h *Handler) handleTraces(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +58,20 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeOK(w, r, &collogspb.ExportLogsServiceResponse{})
+}
+
+func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	req, err := decodeMetrics(r)
+	if err != nil {
+		h.writeDecodeError(w, r, err)
+		return
+	}
+	batch := otlp.TransformResourceMetrics(req.ResourceMetrics)
+	if !h.writer.Enqueue(batch) {
+		h.writeBackpressure(w, r, "metrics")
+		return
+	}
+	h.writeOK(w, r, &colmetricspb.ExportMetricsServiceResponse{})
 }
 
 func (h *Handler) writeOK(w http.ResponseWriter, r *http.Request, resp proto.Message) {
