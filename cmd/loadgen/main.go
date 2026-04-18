@@ -91,27 +91,25 @@ func main() {
 	}()
 
 	// Log providers, one per unique service — mirrors the tracer setup so
-	// log records carry the right service.name resource. Built across the
-	// same service set as traces so a combined run produces a coherent
-	// service catalog.
+	// log records carry the right service.name resource. Always built
+	// (even when --logs-rate is 0) because trace templates can emit
+	// correlation logs inside their own span context, independent of the
+	// background log-only emission loop.
 	logTemplates := filterLogTemplates(allLogs, *servicesFlag)
-	var logProviders map[string]*sdklog.LoggerProvider
-	if *logsRate > 0 {
-		if len(logTemplates) == 0 {
-			log.Fatalf("no log templates matched --services=%q", *servicesFlag)
-		}
-		logProviders, err = buildLogProviders(logTemplates, *endpoint, *insecure)
-		if err != nil {
-			log.Fatalf("build log providers: %v", err)
-		}
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			for _, lp := range logProviders {
-				_ = lp.Shutdown(shutdownCtx)
-			}
-		}()
+	if *logsRate > 0 && len(logTemplates) == 0 {
+		log.Fatalf("no log templates matched --services=%q", *servicesFlag)
 	}
+	logProviders, err := buildLogProvidersForServices(templates, *endpoint, *insecure)
+	if err != nil {
+		log.Fatalf("build log providers: %v", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, lp := range logProviders {
+			_ = lp.Shutdown(shutdownCtx)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -141,6 +139,10 @@ func main() {
 	for svc, p := range providers {
 		tracers[svc] = p.Tracer("loadgen")
 	}
+	loggers := Loggers{}
+	for svc, p := range logProviders {
+		loggers[svc] = p.Logger("loadgen")
+	}
 
 	tokens := make(chan struct{}, *parallelism)
 	var wg sync.WaitGroup
@@ -150,7 +152,7 @@ func main() {
 			defer wg.Done()
 			for range tokens {
 				tpl := templates[rand.IntN(len(templates))]
-				if err := tpl.Emit(ctx, tracers); err != nil {
+				if err := tpl.Emit(ctx, tracers, loggers); err != nil {
 					failed.Add(1)
 					continue
 				}
@@ -183,10 +185,6 @@ func main() {
 	// plenty because each emit is just a record append to the batch
 	// processor.
 	if *logsRate > 0 {
-		loggers := Loggers{}
-		for svc, p := range logProviders {
-			loggers[svc] = p.Logger("loadgen")
-		}
 		logPeriod := time.Duration(float64(time.Second) / *logsRate)
 		go func() {
 			for {
@@ -227,7 +225,12 @@ func jitterDuration(base time.Duration, jitter float64) time.Duration {
 	return time.Duration(float64(base) * factor)
 }
 
-func buildLogProviders(tpls []LogTemplate, endpoint string, insecure bool) (map[string]*sdklog.LoggerProvider, error) {
+// buildLogProvidersForServices builds one LoggerProvider per trace-template
+// service so trace templates can emit correlation logs under the right
+// service.name resource. Using trace templates (not log templates) as the
+// service set ensures every service that can emit a span can also emit a
+// log — independent of whether the log-only background loop is active.
+func buildLogProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdklog.LoggerProvider, error) {
 	byService := map[string]*sdklog.LoggerProvider{}
 	services := map[string]struct{}{}
 	for _, t := range tpls {
