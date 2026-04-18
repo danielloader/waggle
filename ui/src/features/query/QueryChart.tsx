@@ -55,7 +55,7 @@ export function QueryChart({
   result,
   loading,
   error,
-  height = 220,
+  height = 125,
   bucketMs,
   fromMs,
   toMs,
