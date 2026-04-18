@@ -18,7 +18,23 @@ time range, all serialized to the URL:
 
 ![Trace list with query header](docs/traces-list.png)
 
-p95 duration grouped by `service.name` with a per-group timeseries chart:
+Query builder in action — the screenshot below breaks down every HTTP
+operation in the last 6 hours by status code and span name. The Define
+row reads:
+
+- **Select** `COUNT` — how many spans match.
+- **Where** `http.response.status_code exists` — keep only spans that
+  carry an HTTP status, filtering out unrelated internal / DB work
+  *before* aggregation.
+- **Group by** `http.response.status_code, name` — split the count into
+  one row per (status × operation) pair so 200 POST /checkout and 500
+  GET /reports appear separately.
+- **Order by** `count desc` — noisiest combinations float to the top.
+- **Limit** `1000` — cap the result set.
+
+The chart timeseries renders one line per group so error codes stand
+out against the 200s at a glance, and the Overview tab lists the raw
+rows ordered by volume.
 
 ![Aggregation with group-by](docs/query-builder.png)
 
