@@ -58,7 +58,8 @@ export function FilterInput({
   }, []);
 
   const parsed = useMemo(() => parseFilter(text), [text]);
-  const signal = dataset === "spans" ? "span" : "log";
+  const signal =
+    dataset === "spans" ? "span" : dataset === "logs" ? "log" : "metric";
 
   // Debounce only the prefix. The field/phase flip immediately so the
   // dropdown contents switch at once; only the prefix-filtered fetch
@@ -253,6 +254,14 @@ const SYNTHETIC_FIELDS_BY_DATASET: Record<Dataset, { key: string; type: string }
     { key: "severity_number", type: "int" },
     { key: "error", type: "bool" },
     { key: "trace_id", type: "string" },
+    { key: "time_ns", type: "time" },
+  ],
+  metrics: [
+    { key: "name", type: "string" },
+    { key: "kind", type: "string" },
+    { key: "unit", type: "string" },
+    { key: "temporality", type: "string" },
+    { key: "value", type: "float" },
     { key: "time_ns", type: "time" },
   ],
 };

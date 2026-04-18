@@ -5,7 +5,7 @@
  */
 import { z } from "zod";
 
-export const DATASETS = ["spans", "logs"] as const;
+export const DATASETS = ["spans", "logs", "metrics"] as const;
 export type Dataset = (typeof DATASETS)[number];
 
 export const AGG_OPS = [
@@ -398,11 +398,18 @@ export const querySearchSchema = z.object({
 export type QuerySearch = z.infer<typeof querySearchSchema>;
 
 /**
- * Normalize an empty SELECT to the default COUNT so downstream code can
- * always assume ≥1 aggregation.
+ * Normalize an empty SELECT to a sensible default. Spans and logs default
+ * to COUNT (number of events per bucket). Metrics default to MAX(value) —
+ * counts of metric points are meaningless; MAX captures the cumulative
+ * level of a counter and the sampled value of a gauge alike.
  */
-export function selectOrDefault(sel: Aggregation[]): Aggregation[] {
-  return sel.length === 0 ? [{ op: "count" }] : sel;
+export function selectOrDefault(
+  sel: Aggregation[],
+  dataset?: Dataset,
+): Aggregation[] {
+  if (sel.length > 0) return sel;
+  if (dataset === "metrics") return [{ op: "max", field: "value" }];
+  return [{ op: "count" }];
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +448,7 @@ export function buildCountQuery(
       from: new Date(resolved.fromMs).toISOString(),
       to: new Date(resolved.toMs).toISOString(),
     },
-    select: selectOrDefault(search.select),
+    select: selectOrDefault(search.select, dataset),
     where: search.where,
     group_by: search.group_by,
     order_by: search.order_by,
@@ -468,7 +475,7 @@ export function buildOverviewQuery(
       from: new Date(resolved.fromMs).toISOString(),
       to: new Date(resolved.toMs).toISOString(),
     },
-    select: selectOrDefault(search.select),
+    select: selectOrDefault(search.select, dataset),
     where: search.where,
     group_by: search.group_by,
     order_by: search.order_by,
@@ -478,8 +485,11 @@ export function buildOverviewQuery(
 }
 
 /** Short human summary of the SELECT list for the Define panel. */
-export function summarizeSelect(sel: Aggregation[]): string {
-  const items = selectOrDefault(sel);
+export function summarizeSelect(
+  sel: Aggregation[],
+  dataset?: Dataset,
+): string {
+  const items = selectOrDefault(sel, dataset);
   return items
     .map((a) => {
       if (a.op === "count") return "COUNT";

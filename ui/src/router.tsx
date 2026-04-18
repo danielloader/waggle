@@ -7,6 +7,7 @@ import {
 import { RootLayout } from "./routes/root";
 import { TracesPage } from "./routes/TracesPage";
 import { LogsPage } from "./routes/LogsPage";
+import { MetricsPage } from "./routes/MetricsPage";
 import { TraceView } from "./features/traces/TraceView";
 import { querySearchSchema } from "./lib/query";
 
@@ -47,11 +48,22 @@ export const logsRoute = createRoute({
   component: LogsPage,
 });
 
+// /metrics — metric-name picker up top; same Define/Chart/Explore
+// skeleton as the other datasets, query engine running against the
+// metric_points + metric_series join.
+export const metricsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/metrics",
+  validateSearch: querySearchSchema,
+  component: MetricsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   tracesRoute,
   traceDetailRoute,
   logsRoute,
+  metricsRoute,
 ]);
 
 export const router = createRouter({

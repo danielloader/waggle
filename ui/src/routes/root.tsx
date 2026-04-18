@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, ScrollText, PanelLeftClose, PanelLeft } from "lucide-react";
+import {
+  Activity,
+  Gauge,
+  ScrollText,
+  PanelLeftClose,
+  PanelLeft,
+} from "lucide-react";
 import clsx from "clsx";
 
 const STORAGE_KEY = "waggle.sidebar.collapsed";
@@ -106,6 +112,7 @@ export function RootLayout() {
         <nav className="p-2 flex flex-col gap-1 flex-1">
           {navItem("/traces", "Traces", <Activity />, pathname.startsWith("/traces"))}
           {navItem("/logs", "Logs", <ScrollText />, pathname.startsWith("/logs"))}
+          {navItem("/metrics", "Metrics", <Gauge />, pathname.startsWith("/metrics"))}
         </nav>
         <div
           className={clsx(
