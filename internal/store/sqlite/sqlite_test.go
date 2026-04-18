@@ -91,6 +91,17 @@ func TestWriteAndReadSpan(t *testing.T) {
 	if len(fields) != 1 || fields[0].Key != "http.route" {
 		t.Fatalf("unexpected fields: %+v", fields)
 	}
+
+	// With no service scope, ListFields should pool across every service
+	// so the UI's "no WHERE filter yet" state can still populate
+	// group-by / autocomplete dropdowns.
+	fieldsAll, err := s.ListFields(ctx, store.FieldFilter{SignalType: "span"})
+	if err != nil {
+		t.Fatalf("ListFields (no service): %v", err)
+	}
+	if len(fieldsAll) != 1 || fieldsAll[0].Key != "http.route" {
+		t.Fatalf("unexpected cross-service fields: %+v", fieldsAll)
+	}
 }
 
 func TestPercentileUDF(t *testing.T) {

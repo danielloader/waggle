@@ -509,12 +509,29 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		return nil, errors.New("signal_type must be 'span' or 'log'")
 	}
 	limit := clampLimit(f.Limit, 100, 500)
-	const q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
-		WHERE signal_type = ? AND (service_name = ? OR service_name = '')
-		  AND key LIKE ? || '%'
-		GROUP BY key, value_type
-		ORDER BY c DESC, key ASC LIMIT ?`
-	rows, err := s.reader.QueryContext(ctx, q, f.SignalType, f.Service, f.Prefix, limit)
+	// When a service is specified, constrain to that service plus the
+	// resource-level rows (service_name = '') so resource attributes still
+	// surface in autocomplete. When no service is specified, pool across
+	// every service — matches the UI's "no WHERE filter yet" state.
+	var (
+		q    string
+		args []any
+	)
+	if f.Service == "" {
+		q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
+			WHERE signal_type = ? AND key LIKE ? || '%'
+			GROUP BY key, value_type
+			ORDER BY c DESC, key ASC LIMIT ?`
+		args = []any{f.SignalType, f.Prefix, limit}
+	} else {
+		q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
+			WHERE signal_type = ? AND (service_name = ? OR service_name = '')
+			  AND key LIKE ? || '%'
+			GROUP BY key, value_type
+			ORDER BY c DESC, key ASC LIMIT ?`
+		args = []any{f.SignalType, f.Service, f.Prefix, limit}
+	}
+	rows, err := s.reader.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
