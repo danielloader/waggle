@@ -6,7 +6,7 @@ import { FilterInput } from "./FilterInput";
 
 interface Props {
   filter: Filter;
-  dataset?: "spans" | "logs";
+  dataset?: "spans" | "logs" | "metrics";
   service?: string;
   onChange: (f: Filter) => void;
   onRemove: () => void;

@@ -40,7 +40,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
   );
   const service = typeof serviceFilter?.value === "string" ? serviceFilter.value : undefined;
 
-  const datasetLabel = dataset === "spans" ? "spans" : "logs";
+  const datasetLabel = dataset;
   const suggestionsForOrder = [
     ...selectOrDefault(search.select).map((a) =>
       a.op === "count" ? "count" : `${a.op}_${(a.field ?? "").replace(/[^a-zA-Z0-9_]/g, "_")}`,
@@ -104,7 +104,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
             label="Select"
             description="What to compute. COUNT returns one number per result row; aggregations like P95, AVG, SUM, MIN/MAX, and COUNT_DISTINCT take a field and reduce its values. An empty Select returns raw events instead."
             isEmpty={false}
-            value={summarizeSelect(search.select)}
+            value={summarizeSelect(search.select, dataset)}
             editor={
               <SelectEditor
                 select={search.select}
