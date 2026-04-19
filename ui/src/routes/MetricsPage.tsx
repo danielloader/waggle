@@ -5,7 +5,6 @@ import { Accordion } from "../components/ui/Accordion";
 import { DefinePanel } from "../features/query/DefinePanel";
 import { QueryChart } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
-import { MetricPicker } from "../features/query/MetricPicker";
 import {
   bucketMsFor,
   buildCountQuery,
@@ -20,12 +19,14 @@ import { metricsRoute } from "../router";
 const COLLAPSE_DISTANCE = 220;
 
 /**
- * Metrics explorer. Top-of-page picker selects a metric by name; the
- * name+kind land as a WHERE filter pinned to the rest of the query, so
- * the chart and tables only show that metric's data. Everything below
- * (DefinePanel, accordions, tabs) reuses the shared components the
- * traces/logs pages use — metrics is just another `dataset` to the
- * query engine.
+ * Metrics explorer. Same skeleton as traces / logs — the Define panel
+ * drives filtering via WHERE. Scoping to a single metric is just a
+ * `name = <metric>` WHERE filter, which the shared filter editor's
+ * value-autocomplete populates from /api/fields/name/values.
+ *
+ * The chart only renders once a `name =` filter is present — otherwise
+ * we'd be aggregating MAX(value) across every metric in the store,
+ * which never means anything useful.
  */
 export function MetricsPage() {
   const search = metricsRoute.useSearch();
@@ -65,9 +66,9 @@ export function MetricsPage() {
 
   useRefreshPersistence(search, setSearch);
 
-  // The picker drives the query by pinning a `name = <metric>` WHERE
-  // filter. Whatever filters the user has set in the Define panel stay
-  // orthogonal to the picker.
+  // Gate the chart on the user having scoped to one metric. An aggregate
+  // over "all metrics in the store" is meaningless; better to prompt
+  // than render a misleading line.
   const pickedName = useMemo(() => {
     const nameFilter = search.where.find(
       (f) => f.field === "name" && f.op === "=",
@@ -76,9 +77,6 @@ export function MetricsPage() {
   }, [search.where]);
 
   const chart = useQuery({
-    // Gate the chart on having picked a metric. Metrics datasets without
-    // a name filter would try to aggregate across every series in the
-    // store — usually not what the user wants.
     queryKey: ["query", "metrics", search],
     queryFn: ({ signal }) =>
       runQuery(buildCountQuery("metrics", search), signal),
@@ -107,28 +105,6 @@ export function MetricsPage() {
         onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
         collapsedSummary={querySummary(search, pickedName)}
       >
-        <div
-          className="flex items-center gap-3 px-4 pt-3"
-          style={{ color: "var(--color-ink-muted)" }}
-        >
-          <span className="text-sm">Metric</span>
-          <MetricPicker
-            value={pickedName}
-            onChange={(m) => {
-              const rest = search.where.filter(
-                (f) => !(f.field === "name" && f.op === "="),
-              );
-              if (m) {
-                setSearch({
-                  ...search,
-                  where: [...rest, { field: "name", op: "=", value: m.name }],
-                });
-              } else {
-                setSearch({ ...search, where: rest });
-              }
-            }}
-          />
-        </div>
         <DefinePanel
           dataset="metrics"
           search={search}
@@ -145,10 +121,11 @@ export function MetricsPage() {
         <div className="p-3" style={{ background: "var(--color-surface)" }}>
           {pickedName === "" ? (
             <div
-              className="flex items-center justify-center text-sm"
+              className="flex items-center justify-center text-sm px-4 text-center"
               style={{ color: "var(--color-ink-muted)", height: 125 }}
             >
-              Pick a metric above to chart it.
+              Add a <code className="mx-1 font-mono">name = …</code> filter
+              above to chart a metric.
             </div>
           ) : (
             <QueryChart

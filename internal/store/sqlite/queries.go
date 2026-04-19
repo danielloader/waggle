@@ -744,6 +744,17 @@ var syntheticLogFields = []store.FieldInfo{
 	{Key: "error", ValueType: "bool"},
 }
 
+var syntheticMetricFields = []store.FieldInfo{
+	{Key: "name", ValueType: "str"},
+	{Key: "service.name", ValueType: "str"},
+	{Key: "kind", ValueType: "str"},
+	{Key: "unit", ValueType: "str"},
+	{Key: "temporality", ValueType: "str"},
+	{Key: "value", ValueType: "flt"},
+	{Key: "time_ns", ValueType: "time"},
+	{Key: "start_time_ns", ValueType: "time"},
+}
+
 func matchingSyntheticFields(signalType, prefix string) []store.FieldInfo {
 	var src []store.FieldInfo
 	switch signalType {
@@ -751,6 +762,8 @@ func matchingSyntheticFields(signalType, prefix string) []store.FieldInfo {
 		src = syntheticSpanFields
 	case "log":
 		src = syntheticLogFields
+	case "metric":
+		src = syntheticMetricFields
 	default:
 		return nil
 	}
@@ -840,6 +853,19 @@ func realColumnForValues(signalType, key string) (col, table string, ok bool) {
 			return "service_name", "logs", true
 		case "severity_text":
 			return "severity_text", "logs", true
+		}
+	case "metric":
+		switch key {
+		case "name":
+			return "name", "metric_series", true
+		case "service.name":
+			return "service_name", "metric_series", true
+		case "kind":
+			return "kind", "metric_series", true
+		case "unit":
+			return "unit", "metric_series", true
+		case "temporality":
+			return "temporality", "metric_series", true
 		}
 	}
 	return "", "", false
