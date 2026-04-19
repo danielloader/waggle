@@ -240,6 +240,13 @@ interface Suggestion {
 // them first in autocomplete gives users a fast path to the common ones
 // without having to know the attribute-key catalog.
 const SYNTHETIC_FIELDS_BY_DATASET: Record<Dataset, { key: string; type: string }[]> = {
+  events: [
+    { key: "signal_type", type: "string" },
+    { key: "service.name", type: "string" },
+    { key: "name", type: "string" },
+    { key: "trace_id", type: "string" },
+    { key: "time_ns", type: "time" },
+  ],
   spans: [
     { key: "is_root", type: "bool" },
     { key: "error", type: "bool" },
@@ -257,11 +264,10 @@ const SYNTHETIC_FIELDS_BY_DATASET: Record<Dataset, { key: string; type: string }
     { key: "time_ns", type: "time" },
   ],
   metrics: [
-    { key: "name", type: "string" },
-    { key: "kind", type: "string" },
-    { key: "unit", type: "string" },
-    { key: "temporality", type: "string" },
-    { key: "value", type: "float" },
+    // Metric-name keys (e.g. requests.total, memory.used) are discovered
+    // via /api/fields — no need to hard-code them. What's always present:
+    { key: "meta.dataset", type: "string" },
+    { key: "service.name", type: "string" },
     { key: "time_ns", type: "time" },
   ],
 };

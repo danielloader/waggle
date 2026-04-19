@@ -10,6 +10,29 @@ import (
 	"github.com/danielloader/waggle/internal/store"
 )
 
+// spanEvent is a compact constructor for a span-flavoured Event row used in
+// tests. Real ingestion wraps this in the OTLP transform; here we build it
+// by hand so each test can control every field.
+func spanEvent(tid, sid, parentSID []byte, service, name string, statusCode int32, startNS, endNS int64, attrs string) store.Event {
+	end := endNS
+	sc := statusCode
+	var flags uint32
+	if attrs == "" {
+		attrs = `{"meta.signal_type":"span","meta.span_kind":"INTERNAL"}`
+	}
+	return store.Event{
+		TimeNS: startNS, EndTimeNS: &end,
+		ResourceID: 1, ScopeID: 1,
+		ServiceName: service, Name: name,
+		TraceID:        tid,
+		SpanID:         sid,
+		ParentSpanID:   parentSID,
+		StatusCode:     &sc,
+		Flags:          &flags,
+		AttributesJSON: attrs,
+	}
+}
+
 // TestRate_PostProcessDiffsPerBucket exercises the rate post-processor
 // end-to-end: emit spans with a cumulative `bytes_out` attribute across
 // buckets, query with rate_sum(bytes_out), and assert the rate matches
@@ -22,8 +45,6 @@ func TestRate_PostProcessDiffsPerBucket(t *testing.T) {
 	}
 	defer s.Close()
 
-	// Five buckets at 1-second spacing with cumulative byte counter jumping
-	// by a known amount each step: 100, 300, 600, 900, 1400.
 	base := time.Date(2026, 4, 17, 10, 0, 0, 0, time.UTC).UnixNano()
 	bucketNS := int64(time.Second)
 	values := []int64{100, 300, 600, 900, 1400}
@@ -39,17 +60,13 @@ func TestRate_PostProcessDiffsPerBucket(t *testing.T) {
 	for i, v := range values {
 		tid := make([]byte, 16)
 		tid[0] = byte(i + 1)
-		batch.Spans = append(batch.Spans, store.Span{
-			TraceID: tid, SpanID: []byte{byte(i + 1), 0, 0, 0, 0, 0, 0, 1},
-			ResourceID:     1,
-			ScopeID:        1,
-			ServiceName:    "svc",
-			Name:           "op",
-			Kind:           1,
-			StartTimeNS:    base + int64(i)*bucketNS,
-			EndTimeNS:      base + int64(i)*bucketNS + 1_000_000,
-			AttributesJSON: fmtBytesAttr(v),
-		})
+		attrs := `{"meta.signal_type":"span","meta.span_kind":"INTERNAL","bytes_out":` + itoa(v) + `}`
+		batch.Events = append(batch.Events, spanEvent(
+			tid, []byte{byte(i + 1), 0, 0, 0, 0, 0, 0, 1}, nil,
+			"svc", "op", 0,
+			base+int64(i)*bucketNS, base+int64(i)*bucketNS+1_000_000,
+			attrs,
+		))
 	}
 	if err := s.WriteBatch(ctx, batch); err != nil {
 		t.Fatalf("WriteBatch: %v", err)
@@ -91,7 +108,6 @@ func TestRate_PostProcessDiffsPerBucket(t *testing.T) {
 		t.Fatalf("want %d buckets, got %d", len(values), len(res.Rows))
 	}
 
-	// Expected rates (value_n - value_{n-1}) / 1s.
 	expected := []any{nil, float64(200), float64(300), float64(300), float64(500)}
 	rateCol := compiled.Rates[0].ColumnIndex
 	for i, row := range res.Rows {
@@ -135,23 +151,16 @@ func TestIsRoot_SelectsRootSpansEndToEnd(t *testing.T) {
 			FirstSeenNS:    now, LastSeenNS: now,
 		}},
 		Scopes: []store.Scope{{ID: 1, Name: "lib"}},
-		Spans: []store.Span{
-			{TraceID: tid, SpanID: rootSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "root", StartTimeNS: now, EndTimeNS: now + 10_000_000,
-				AttributesJSON: "{}"},
-			{TraceID: tid, SpanID: childA, ParentSpanID: rootSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "childA", StartTimeNS: now + 1, EndTimeNS: now + 5_000_000,
-				AttributesJSON: "{}"},
-			{TraceID: tid, SpanID: childB, ParentSpanID: rootSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "childB", StartTimeNS: now + 2, EndTimeNS: now + 3_000_000,
-				AttributesJSON: "{}"},
+		Events: []store.Event{
+			spanEvent(tid, rootSID, nil, "svc", "root", 0, now, now+10_000_000, ""),
+			spanEvent(tid, childA, rootSID, "svc", "childA", 0, now+1, now+5_000_000, ""),
+			spanEvent(tid, childB, rootSID, "svc", "childB", 0, now+2, now+3_000_000, ""),
 		},
 	}
 	if err := s.WriteBatch(ctx, batch); err != nil {
 		t.Fatal(err)
 	}
 
-	// --- root-only raw query --------------------------------------------
 	q := &query.Query{
 		Dataset: query.DatasetSpans,
 		TimeRange: query.TimeRange{
@@ -194,7 +203,6 @@ func TestIsRoot_SelectsRootSpansEndToEnd(t *testing.T) {
 		t.Errorf("expected root span; got %v", res.Rows[0][nameIdx])
 	}
 
-	// --- GROUP BY is_root counts ----------------------------------------
 	q2 := &query.Query{
 		Dataset:   query.DatasetSpans,
 		TimeRange: q.TimeRange,
@@ -216,7 +224,6 @@ func TestIsRoot_SelectsRootSpansEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two groups: is_root=0 → 2 rows (children), is_root=1 → 1 row (root).
 	if len(res2.Rows) != 2 {
 		t.Fatalf("group by is_root: want 2 rows, got %d (%v)", len(res2.Rows), res2.Rows)
 	}
@@ -251,6 +258,13 @@ func TestError_SyntheticFieldCombinesStatusAndExceptionEvents(t *testing.T) {
 	errSID := []byte{0x10, 0, 0, 0, 0, 0, 0, 2}
 	excSID := []byte{0x10, 0, 0, 0, 0, 0, 0, 3}
 
+	excEvent := spanEvent(tid, excSID, nil, "svc", "exc", 0, now, now+1_000_000, "")
+	excEvent.SpanEvents = []store.SpanEvent{{
+		TraceID: tid, SpanID: excSID, Seq: 0,
+		TimeNS: now, Name: "exception",
+		AttributesJSON: `{"exception.type":"TimeoutError","exception.message":"deadline exceeded"}`,
+	}}
+
 	batch := store.Batch{
 		Resources: []store.Resource{{
 			ID: 1, ServiceName: "svc",
@@ -258,24 +272,10 @@ func TestError_SyntheticFieldCombinesStatusAndExceptionEvents(t *testing.T) {
 			FirstSeenNS:    now, LastSeenNS: now,
 		}},
 		Scopes: []store.Scope{{ID: 1, Name: "lib"}},
-		Spans: []store.Span{
-			{TraceID: tid, SpanID: okSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "ok", StatusCode: 0,
-				StartTimeNS: now, EndTimeNS: now + 1_000_000, AttributesJSON: "{}"},
-			{TraceID: tid, SpanID: errSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "err", StatusCode: 2,
-				StartTimeNS: now, EndTimeNS: now + 1_000_000, AttributesJSON: "{}"},
-			{TraceID: tid, SpanID: excSID, ResourceID: 1, ScopeID: 1,
-				ServiceName: "svc", Name: "exc", StatusCode: 0,
-				StartTimeNS: now, EndTimeNS: now + 1_000_000, AttributesJSON: "{}",
-				// Exception event but status remains UNSET — this is the
-				// case that a plain status_code filter would miss.
-				Events: []store.SpanEvent{{
-					TraceID: tid, SpanID: excSID, Seq: 0,
-					TimeNS: now, Name: "exception",
-					AttributesJSON: `{"exception.type":"TimeoutError","exception.message":"deadline exceeded"}`,
-				}},
-			},
+		Events: []store.Event{
+			spanEvent(tid, okSID, nil, "svc", "ok", 0, now, now+1_000_000, ""),
+			spanEvent(tid, errSID, nil, "svc", "err", 2, now, now+1_000_000, ""),
+			excEvent,
 		},
 	}
 	if err := s.WriteBatch(ctx, batch); err != nil {
@@ -315,24 +315,15 @@ func TestError_SyntheticFieldCombinesStatusAndExceptionEvents(t *testing.T) {
 		return int(n)
 	}
 
-	// Plain status_code = 2 catches only the ERROR-status span.
 	if n := run([]query.Filter{{Field: "status_code", Op: query.FilterEq, Value: 2}}); n != 1 {
 		t.Errorf("status_code=2 count: want 1, got %d", n)
 	}
-	// error = true catches the ERROR-status span AND the exception-event span.
 	if n := run([]query.Filter{{Field: "error", Op: query.FilterEq, Value: true}}); n != 2 {
 		t.Errorf("error=true count: want 2, got %d", n)
 	}
-	// error = false catches the remaining clean span.
 	if n := run([]query.Filter{{Field: "error", Op: query.FilterEq, Value: false}}); n != 1 {
 		t.Errorf("error=false count: want 1, got %d", n)
 	}
-}
-
-func fmtBytesAttr(v int64) string {
-	// Minimal JSON with an integer attribute. Kept as a string template to
-	// avoid pulling encoding/json in; format is unambiguous for our keys.
-	return `{"bytes_out":` + itoa(v) + `}`
 }
 
 func itoa(v int64) string {

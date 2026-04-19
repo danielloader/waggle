@@ -13,3 +13,6 @@
 .env
 .env.local
 .playwright-mcp/**
+# Stray Playwright screenshots written to CWD during iteration. Put docs
+# intended for the repo under docs/ explicitly; otherwise ignore.
+/*.png

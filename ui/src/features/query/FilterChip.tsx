@@ -1,12 +1,12 @@
 import { X } from "lucide-react";
-import type { Filter } from "../../lib/query";
+import type { Dataset, Filter } from "../../lib/query";
 import { filterToText } from "../../lib/filterText";
 import { Popover } from "../../components/ui/Popover";
 import { FilterInput } from "./FilterInput";
 
 interface Props {
   filter: Filter;
-  dataset?: "spans" | "logs" | "metrics";
+  dataset?: Dataset;
   service?: string;
   onChange: (f: Filter) => void;
   onRemove: () => void;

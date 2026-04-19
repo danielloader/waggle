@@ -544,21 +544,12 @@ function buildResourceAttrs(resource: TraceResource | undefined): AttrRow[] {
   return rows.sort(compareByKey);
 }
 
-function spanKindName(kind: number): string {
-  switch (kind) {
-    case 1:
-      return "internal";
-    case 2:
-      return "server";
-    case 3:
-      return "client";
-    case 4:
-      return "producer";
-    case 5:
-      return "consumer";
-    default:
-      return "unspecified";
-  }
+function spanKindName(kind: string): string {
+  // Backend now sends the OTel enum name ("SERVER", "CLIENT", …) lifted
+  // from meta.span_kind. Lowercase for display; fall back to unspecified
+  // when empty (e.g. instrumentations that didn't set a kind).
+  if (!kind || kind === "UNSPECIFIED") return "unspecified";
+  return kind.toLowerCase();
 }
 
 function statusCodeName(code: number): string {

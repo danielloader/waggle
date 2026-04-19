@@ -28,6 +28,8 @@ interface ChartTooltipContentProps {
 import type { QueryResult } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 
+export type MissingValuesMode = "auto" | "zero" | "omit";
+
 interface Props {
   result: QueryResult | undefined;
   loading?: boolean;
@@ -43,6 +45,35 @@ interface Props {
    * ms — caller can narrow the window (zoom) and jump to Explore Data.
    */
   onBucketClick?: (tMs: number) => void;
+  /**
+   * Which aggregation column to plot. Defaults to the first aggregation.
+   * Multi-SELECT queries render one <QueryChart> per aggregation index.
+   */
+  aggIdx?: number;
+  /**
+   * How to handle buckets that returned no rows. Mirrors Honeycomb's
+   * Edit-Chart "Missing values" setting: "auto" zero-fills counts and
+   * omits everything else; "zero" always zero-fills; "omit" never does.
+   */
+  missingValues?: MissingValuesMode;
+}
+
+/** aggregationIndices returns one entry per aggregation column in the
+ *  result — callers iterate these to render one chart per SELECT.
+ *
+ *  Column layout from the builder (when bucketed):
+ *    [0]            bucket_ns
+ *    [1..1+G]       GROUP BY columns (len = group_keys.length)
+ *    [1+G..end]     aggregations, one per SELECT item
+ */
+export function aggregationIndices(result: QueryResult | undefined): { idx: number; label: string }[] {
+  if (!result || !result.has_bucket) return [];
+  const firstAgg = 1 + (result.group_keys?.length ?? 0);
+  const out: { idx: number; label: string }[] = [];
+  for (let i = firstAgg; i < result.columns.length; i++) {
+    out.push({ idx: i, label: result.columns[i].name });
+  }
+  return out;
 }
 
 /**
@@ -60,14 +91,28 @@ export function QueryChart({
   fromMs,
   toMs,
   onBucketClick,
+  aggIdx,
+  missingValues = "auto",
 }: Props) {
-  // Zero-fill any missing buckets so the chart doesn't interpolate a
-  // smooth curve across quiet periods. Each "no data" bucket drops to 0
-  // for every series, producing an obvious visual gap between bursts.
+  // Default to the first aggregation when the caller didn't specify one —
+  // keeps the single-SELECT case behaving as before.
+  const numGroups = result?.group_keys?.length ?? 0;
+  const effectiveAggIdx = aggIdx ?? 1 + numGroups;
+
+  // Resolve "auto" → zero/omit based on aggregation alias. Caller
+  // overrides win, so a single-SELECT count chart can still be shown
+  // with gaps if the user really wants it.
+  const aggLabel = result?.columns[effectiveAggIdx]?.name ?? "";
+  const fillMode: Exclude<MissingValuesMode, "auto"> =
+    missingValues === "auto"
+      ? (isZeroFillAgg(aggLabel) ? "zero" : "omit")
+      : missingValues;
+
   const { data, series } = useMemo(
-    () => buildSeries(result, { fromMs, toMs, bucketMs }),
-    [result, fromMs, toMs, bucketMs],
+    () => buildSeries(result, effectiveAggIdx, fillMode, { fromMs, toMs, bucketMs }),
+    [result, effectiveAggIdx, fillMode, fromMs, toMs, bucketMs],
   );
+  const connectNulls = fillMode === "omit";
 
   const durationMs = Math.max(1, toMs - fromMs);
   const majorTicks = useMemo(
@@ -146,7 +191,12 @@ export function QueryChart({
           >
             <CartesianGrid stroke="var(--color-border)" vertical={false} />
             {xAxis}
-            <YAxis stroke="var(--color-ink-muted)" fontSize={11} width={40} />
+            <YAxis
+              stroke="var(--color-ink-muted)"
+              fontSize={11}
+              width={48}
+              tickFormatter={formatSI}
+            />
             {tooltip}
             <Area
               type="monotone"
@@ -156,6 +206,7 @@ export function QueryChart({
               fill="var(--color-accent)"
               fillOpacity={0.15}
               isAnimationActive={false}
+              connectNulls={connectNulls}
               activeDot={clickable ? { r: 5, style: { cursor: "pointer" } } : undefined}
             />
           </AreaChart>
@@ -176,7 +227,12 @@ export function QueryChart({
         >
           <CartesianGrid stroke="var(--color-border)" vertical={false} />
           {xAxis}
-          <YAxis stroke="var(--color-ink-muted)" fontSize={11} width={40} />
+          <YAxis
+            stroke="var(--color-ink-muted)"
+            fontSize={11}
+            width={48}
+            tickFormatter={formatSI}
+          />
           {tooltip}
           {series.map((s) => (
             <Line
@@ -188,6 +244,7 @@ export function QueryChart({
               strokeWidth={1.5}
               name={s.label}
               isAnimationActive={false}
+              connectNulls={connectNulls}
               activeDot={clickable ? { r: 5, style: { cursor: "pointer" } } : undefined}
             />
           ))}
@@ -251,8 +308,11 @@ function ChartTooltip({ active, payload, label, bucketMs }: ChartTooltipContentP
                     {p.name ?? String(p.dataKey)}
                   </span>
                 </td>
-                <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                  {v.toLocaleString()}
+                <td
+                  style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                  title={v.toLocaleString()}
+                >
+                  {formatSI(v)}
                 </td>
                 <td
                   style={{
@@ -260,8 +320,9 @@ function ChartTooltip({ active, payload, label, bucketMs }: ChartTooltipContentP
                     fontVariantNumeric: "tabular-nums",
                     color: "var(--color-ink-muted)",
                   }}
+                  title={(v / bucketSec).toString()}
                 >
-                  {(v / bucketSec).toFixed(2)}
+                  {formatSI(v / bucketSec)}
                 </td>
               </tr>
             );
@@ -333,41 +394,77 @@ function humanBucket(ms: number): string {
   return `${ms}ms bucket`;
 }
 
+// formatSI trims large/small numbers to SI-suffixed strings so y-axis
+// ticks don't blow through their column width. Handles:
+//   1_200_000        → "1.2M"
+//   2_456_789_012    → "2.46G"
+//   0.0034           → "3.4m"
+//   1234             → "1.23K"
+//   0                → "0"
+// Bytes aren't distinguished from counts — we use decimal (K=1000) because
+// waggle queries mix units; the tooltip shows the exact value when precision
+// matters.
+function formatSI(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  if (value === 0) return "0";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1e12) return sign + trimTrailingZeros((abs / 1e12).toFixed(2)) + "T";
+  if (abs >= 1e9) return sign + trimTrailingZeros((abs / 1e9).toFixed(2)) + "G";
+  if (abs >= 1e6) return sign + trimTrailingZeros((abs / 1e6).toFixed(2)) + "M";
+  if (abs >= 1e3) return sign + trimTrailingZeros((abs / 1e3).toFixed(2)) + "K";
+  if (abs >= 1) return sign + trimTrailingZeros(abs.toFixed(2));
+  if (abs >= 1e-3) return sign + trimTrailingZeros((abs * 1e3).toFixed(2)) + "m";
+  if (abs >= 1e-6) return sign + trimTrailingZeros((abs * 1e6).toFixed(2)) + "µ";
+  if (abs >= 1e-9) return sign + trimTrailingZeros((abs * 1e9).toFixed(2)) + "n";
+  return sign + abs.toExponential(2);
+}
+
+function trimTrailingZeros(s: string): string {
+  // Turn "1.20" → "1.2", "1.00" → "1", leave "1.23" alone.
+  if (!s.includes(".")) return s;
+  return s.replace(/\.?0+$/, "");
+}
+
 // ---------------------------------------------------------------------------
 // Series pivot (unchanged from before except uses t as number for X type)
 // ---------------------------------------------------------------------------
 
 function buildSeries(
   result: QueryResult | undefined,
+  aggIdx: number,
+  fillMode: "zero" | "omit",
   { fromMs, toMs, bucketMs }: { fromMs: number; toMs: number; bucketMs: number },
 ): {
-  data: { t: number; [k: string]: number }[];
+  data: { t: number; [k: string]: number | null }[];
   series: { key: string; label: string }[];
 } {
   if (!result || !result.has_bucket || !result.rows) return { data: [], series: [] };
 
   const bucketIdx = 0;
+  // group_keys holds the GROUP BY column aliases (without bucket_ns). So
+  // columns 1..1+numGroups are GROUP BYs; aggregations start at
+  // 1 + numGroups. See aggregationIndices above.
+  const numGroups = result.group_keys?.length ?? 0;
   const groupIdxs: number[] = [];
-  let aggIdx = -1;
-  for (let i = 1; i < result.columns.length; i++) {
-    if (i === result.columns.length - 1) {
-      aggIdx = i;
-    } else {
-      groupIdxs.push(i);
-    }
+  for (let i = 1; i <= numGroups; i++) groupIdxs.push(i);
+  if (aggIdx < 1 + numGroups || aggIdx >= result.columns.length) {
+    return { data: [], series: [] };
   }
-  if (aggIdx === -1) return { data: [], series: [] };
 
   const seen = new Set<string>();
   const seriesOrder: { key: string; label: string }[] = [];
-  const byBucket = new Map<number, { t: number; [k: string]: number }>();
+  const byBucket = new Map<number, { t: number; [k: string]: number | null }>();
 
   for (const row of result.rows) {
     const bucketNS = Number(row[bucketIdx]);
     const t = Math.floor(bucketNS / 1_000_000);
     const label = groupIdxs.length === 0 ? "count" : groupIdxs.map((g) => String(row[g] ?? "·")).join(" / ");
     const key = sanitizeKey(label);
-    const value = Number(row[aggIdx] ?? 0);
+    const raw = row[aggIdx];
+    // Preserve explicit nulls from the server (e.g. MAX of an empty set)
+    // as gaps rather than coercing to 0.
+    const value = raw === null || raw === undefined ? null : Number(raw);
     if (!seen.has(key)) {
       seen.add(key);
       seriesOrder.push({ key, label });
@@ -377,12 +474,13 @@ function buildSeries(
     byBucket.set(t, bucket);
   }
 
-  // Zero-fill missing buckets across the query's full range. Matches the
-  // backend's alignment — buckets are emitted at `(ns / bucketNs) *
-  // bucketNs`, so the corresponding ms boundary is `floor(t / bucketMs) *
-  // bucketMs`. For every expected bucket position, if we have a row we
-  // keep it; otherwise we inject a zero for each discovered series.
-  if (bucketMs > 0 && toMs > fromMs) {
+  // Missing-bucket handling: "zero" fills empty buckets with 0 across
+  // the query window, so the x-axis extent is preserved and genuine
+  // quiet periods render as a flat baseline. "omit" returns only the
+  // buckets the server produced, leaving Recharts' monotone line to
+  // connect consecutive real points directly (sparse data → sharp
+  // peaks; quiet periods → horizontal interpolant).
+  if (fillMode === "zero" && bucketMs > 0 && toMs > fromMs) {
     const filled: typeof byBucket = new Map();
     const startMs = Math.floor(fromMs / bucketMs) * bucketMs;
     for (let t = startMs; t <= toMs; t += bucketMs) {
@@ -390,7 +488,7 @@ function buildSeries(
       if (existing) {
         filled.set(t, existing);
       } else {
-        const row: { t: number; [k: string]: number } = { t };
+        const row: { t: number; [k: string]: number | null } = { t };
         for (const s of seriesOrder) row[s.key] = 0;
         filled.set(t, row);
       }
@@ -405,8 +503,22 @@ function buildSeries(
     return { data, series: seriesOrder };
   }
 
+  // Non-count aggregation: no fill. Data carries only the buckets the
+  // server returned; the line connects through them.
   const data = Array.from(byBucket.values()).sort((a, b) => a.t - b.t);
   return { data, series: seriesOrder };
+}
+
+// isZeroFillAgg reports whether absence of rows in a bucket should
+// render as 0. Matches the alias-prefix convention the builder uses:
+// count / count_* / rate_sum_* are counts of events, so "no rows =
+// 0 events". Everything else is an aggregation over values, so "no
+// rows = no observation" which we don't want to confuse with zero.
+function isZeroFillAgg(aliasName: string): boolean {
+  if (aliasName === "count") return true;
+  if (aliasName.startsWith("count_")) return true;
+  if (aliasName.startsWith("rate_sum_")) return true;
+  return false;
 }
 
 function sanitizeKey(s: string): string {

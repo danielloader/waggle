@@ -67,16 +67,21 @@ func TestE2E_SpanKinds(t *testing.T) {
 	if kindIdx < 0 || countIdx < 0 {
 		t.Fatalf("missing columns in result: %+v", res.Columns)
 	}
-	got := map[int64]int64{}
+	got := map[string]int64{}
 	for _, row := range res.Rows {
-		k, _ := toInt64(row[kindIdx])
+		k, _ := row[kindIdx].(string)
 		c, _ := toInt64(row[countIdx])
 		got[k] = c
 	}
-	// OTel SpanKind ints: 0=unspecified, 1=internal, 2=server, 3=client, 4=producer, 5=consumer.
-	want := map[int64]int64{1: 1, 2: 1, 3: 1, 4: 1, 5: 1}
-	if !equalIntMap(want, got) {
+	// meta.span_kind is the OTel enum name: INTERNAL, SERVER, CLIENT, PRODUCER, CONSUMER.
+	want := map[string]int64{"INTERNAL": 1, "SERVER": 1, "CLIENT": 1, "PRODUCER": 1, "CONSUMER": 1}
+	if len(want) != len(got) {
 		t.Errorf("kind distribution: want %v, got %v", want, got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("kind %q: want %d, got %d", k, v, got[k])
+		}
 	}
 }
 

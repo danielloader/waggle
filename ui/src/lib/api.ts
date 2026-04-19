@@ -24,7 +24,12 @@ export interface SpanOut {
   resource_id: number;
   service_name: string;
   name: string;
-  kind: number;
+  /**
+   * OTel SpanKind enum name, lowercased — "server" | "client" | "internal" |
+   * "producer" | "consumer" | "" (unspecified). Mirrors meta.span_kind but
+   * exposed as a top-level field for convenience.
+   */
+  kind: string;
   start_ns: number;
   end_ns: number;
   duration_ns: number;
@@ -71,26 +76,6 @@ export interface LogOut {
   trace_id?: string;
   span_id?: string;
   attributes: string;
-}
-
-export interface MetricSummary {
-  name: string;
-  kind: string;
-  unit?: string;
-  description?: string;
-  series_count: number;
-}
-
-export interface MetricSeriesSummary {
-  series_id: number;
-  service_name: string;
-  name: string;
-  kind: string;
-  unit?: string;
-  temporality?: string;
-  attributes: string;
-  first_seen_ns: number;
-  last_seen_ns: number;
 }
 
 /**
@@ -145,18 +130,6 @@ export const api = {
   searchLogs: (params: URLSearchParams, signal?: AbortSignal) =>
     getJSON<{ logs: LogOut[]; next_cursor: string }>(
       `/api/logs/search?${params.toString()}`,
-      signal,
-    ),
-
-  listMetrics: (params: URLSearchParams, signal?: AbortSignal) =>
-    getJSON<{ metrics: MetricSummary[] }>(
-      `/api/metrics?${params.toString()}`,
-      signal,
-    ),
-
-  listMetricSeries: (name: string, params: URLSearchParams, signal?: AbortSignal) =>
-    getJSON<{ series: MetricSeriesSummary[] }>(
-      `/api/metrics/${encodeURIComponent(name)}/series?${params.toString()}`,
       signal,
     ),
 };

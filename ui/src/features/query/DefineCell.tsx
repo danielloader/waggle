@@ -45,7 +45,7 @@ export function DefineCell({
       <RadixPopover.Trigger asChild>
         <button
           type="button"
-          className="text-left w-full group flex flex-col gap-1 py-2 outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] rounded"
+          className="text-left w-full group flex flex-col gap-1 px-2 py-2 -mx-2 cursor-pointer rounded outline-none hover:bg-[var(--color-card-hover)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent)]"
         >
           {description ? (
             <Tooltip.Root>

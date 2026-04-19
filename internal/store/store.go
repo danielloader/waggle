@@ -24,7 +24,7 @@ type LogFilter struct {
 
 // FieldFilter scopes the attribute key catalog query.
 type FieldFilter struct {
-	SignalType string // "span" | "log"
+	SignalType string // "span" | "log" | "metric"
 	Service    string
 	Prefix     string
 	Limit      int
@@ -55,9 +55,6 @@ type Store interface {
 
 	SearchLogs(ctx context.Context, f LogFilter) ([]LogOut, string, error)
 
-	ListMetrics(ctx context.Context, f MetricFilter) ([]MetricSummary, error)
-	ListMetricSeries(ctx context.Context, f MetricSeriesFilter) ([]MetricSeriesSummary, error)
-
 	// RunQuery executes a pre-compiled structured query (SQL + args + column
 	// schema) against the read pool. All user-provided inputs have been
 	// whitelisted by the query package before we get here; sqlite parameter
@@ -69,18 +66,4 @@ type Store interface {
 	Clear(ctx context.Context) error
 
 	Close() error
-}
-
-// MetricFilter scopes /api/metrics — the metric-name picker.
-type MetricFilter struct {
-	Service string
-	Prefix  string
-	Limit   int
-}
-
-// MetricSeriesFilter scopes /api/metrics/{name}/series — series listing.
-type MetricSeriesFilter struct {
-	Name    string
-	Service string
-	Limit   int
 }

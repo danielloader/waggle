@@ -54,9 +54,8 @@ func newFixture(t *testing.T) *fixture {
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	w := ingest.NewWriter(st, log, ingest.WriterConfig{
-		FlushEvery: 5 * time.Millisecond,
-		FlushSpans: 10,
-		FlushLogs:  10,
+		FlushEvery:  5 * time.Millisecond,
+		FlushEvents: 10,
 	})
 	w.Start(ctx)
 

@@ -20,6 +20,63 @@ import (
 	"github.com/danielloader/waggle/internal/store/sqlite"
 )
 
+// spanEvent builds a span-flavoured store.Event for seeding in tests.
+func spanEvent(tid, sid, parentSID []byte, service, name string, kind string, statusCode int32, startNS, endNS int64, statusMsg, attrs string) store.Event {
+	end := endNS
+	sc := statusCode
+	var flags uint32
+	if attrs == "" {
+		attrs = "{}"
+	}
+	// Inline meta.* stamping for tests — the OTLP transform would normally do this.
+	stamp := fmt.Sprintf(`"meta.signal_type":"span","meta.span_kind":"%s"`, kind)
+	if attrs == "{}" {
+		attrs = "{" + stamp + "}"
+	} else {
+		attrs = "{" + stamp + "," + attrs[1:]
+	}
+	return store.Event{
+		TimeNS: startNS, EndTimeNS: &end,
+		ResourceID: 1, ScopeID: 1,
+		ServiceName:    service,
+		Name:           name,
+		TraceID:        tid,
+		SpanID:         sid,
+		ParentSpanID:   parentSID,
+		StatusCode:     &sc,
+		StatusMessage:  statusMsg,
+		Flags:          &flags,
+		AttributesJSON: attrs,
+	}
+}
+
+// logEvent builds a log-flavoured store.Event.
+func logEvent(tid, sid []byte, service string, timeNS int64, sevNum int32, sevText, body, attrs string) store.Event {
+	var flags uint32
+	sn := sevNum
+	if attrs == "" {
+		attrs = "{}"
+	}
+	if attrs == "{}" {
+		attrs = `{"meta.signal_type":"log"}`
+	} else {
+		attrs = `{"meta.signal_type":"log",` + attrs[1:]
+	}
+	return store.Event{
+		TimeNS:         timeNS,
+		ResourceID:     1,
+		ScopeID:        1,
+		ServiceName:    service,
+		TraceID:        tid,
+		SpanID:         sid,
+		Flags:          &flags,
+		SeverityNumber: &sn,
+		SeverityText:   sevText,
+		Body:           body,
+		AttributesJSON: attrs,
+	}
+}
+
 // apiFixture wires a real SQLite store into the API router behind an
 // httptest.Server so tests exercise the full HTTP path (path routing,
 // query-string parsing, JSON encoding).
@@ -72,26 +129,15 @@ func (f *apiFixture) seed() string {
 			FirstSeenNS:    now, LastSeenNS: now,
 		}},
 		Scopes: []store.Scope{{ID: 1, Name: "lib", Version: "1.0"}},
-		Spans: []store.Span{
-			{
-				TraceID: tid, SpanID: root, ResourceID: 1, ScopeID: 1,
-				ServiceName: "widget", Name: "GET /", Kind: 2,
-				StartTimeNS: now, EndTimeNS: now + 10_000_000,
-				AttributesJSON: `{"http.route":"/","http.response.status_code":200,"customer.tier":"gold"}`,
-			},
-			{
-				TraceID: tid, SpanID: child, ParentSpanID: root, ResourceID: 1, ScopeID: 1,
-				ServiceName: "widget", Name: "db.query", Kind: 3,
-				StartTimeNS: now + 1_000_000, EndTimeNS: now + 8_000_000,
-				StatusCode:  2, StatusMessage: "boom",
-				AttributesJSON: `{"db.system":"postgresql"}`,
-			},
+		Events: []store.Event{
+			spanEvent(tid, root, nil, "widget", "GET /", "SERVER", 0,
+				now, now+10_000_000, "",
+				`{"http.route":"/","http.response.status_code":200,"customer.tier":"gold"}`),
+			spanEvent(tid, child, root, "widget", "db.query", "CLIENT", 2,
+				now+1_000_000, now+8_000_000, "boom",
+				`{"db.system":"postgresql"}`),
+			logEvent(nil, nil, "widget", now, 9, "INFO", "hello world", `{"component":"http"}`),
 		},
-		Logs: []store.LogRecord{{
-			ResourceID: 1, ScopeID: 1, ServiceName: "widget",
-			TimeNS: now, SeverityNumber: 9, SeverityText: "INFO",
-			Body: "hello world", AttributesJSON: `{"component":"http"}`,
-		}},
 		AttrKeys: []store.AttrKeyDelta{
 			{SignalType: "span", ServiceName: "widget", Key: "http.route", ValueType: "str", Count: 1, LastSeenNS: now},
 			{SignalType: "span", ServiceName: "widget", Key: "customer.tier", ValueType: "str", Count: 1, LastSeenNS: now},
@@ -454,26 +500,21 @@ func TestAPI_Query_StructuredAggregation(t *testing.T) {
 		if i%5 == 0 {
 			status = 500
 		}
-		batch.Spans = append(batch.Spans, store.Span{
-			TraceID: tid, SpanID: sid, ResourceID: 1, ScopeID: 1,
-			ServiceName: "api", Name: "GET " + route, Kind: 2,
-			StartTimeNS:    now - int64(i)*1_000_000,
-			EndTimeNS:      now - int64(i)*1_000_000 + int64(i+1)*500_000,
-			AttributesJSON: fmt.Sprintf(`{"http.route":"%s","http.response.status_code":%d}`, route, status),
-		})
+		ev := spanEvent(tid, sid, nil, "api", "GET "+route, "SERVER", 0,
+			now-int64(i)*1_000_000, now-int64(i)*1_000_000+int64(i+1)*500_000, "",
+			fmt.Sprintf(`{"http.route":"%s","http.response.status_code":%d}`, route, status))
+		batch.Events = append(batch.Events, ev)
 	}
 	for i := range 6 {
 		tid := make([]byte, 16)
 		tid[0] = byte(i)
 		tid[1] = 0xB
-		batch.Spans = append(batch.Spans, store.Span{
-			TraceID: tid, SpanID: []byte{byte(i), 0, 0, 0, 0, 0, 0, 2},
-			ResourceID: 2, ScopeID: 1, ServiceName: "payments",
-			Name: "Authorize", Kind: 2,
-			StartTimeNS:    now - int64(i)*1_000_000,
-			EndTimeNS:      now - int64(i)*1_000_000 + 2_000_000,
-			AttributesJSON: `{"rpc.service":"PaymentService"}`,
-		})
+		ev := spanEvent(tid, []byte{byte(i), 0, 0, 0, 0, 0, 0, 2}, nil,
+			"payments", "Authorize", "SERVER", 0,
+			now-int64(i)*1_000_000, now-int64(i)*1_000_000+2_000_000, "",
+			`{"rpc.service":"PaymentService"}`)
+		ev.ResourceID = 2
+		batch.Events = append(batch.Events, ev)
 	}
 	if err := f.st.WriteBatch(f.ctx, batch); err != nil {
 		t.Fatal(err)
@@ -619,13 +660,11 @@ func TestAPI_Traces_Pagination(t *testing.T) {
 	for i := range 15 {
 		tid := make([]byte, 16)
 		tid[0] = byte(i)
-		batch.Spans = append(batch.Spans, store.Span{
-			TraceID: tid, SpanID: []byte{byte(i), 0, 0, 0, 0, 0, 0, 1},
-			ResourceID: 1, ScopeID: 1, ServiceName: "widget",
-			Name: fmt.Sprintf("r%d", i), Kind: 2,
-			StartTimeNS: now - int64(i)*1_000_000, EndTimeNS: now - int64(i)*1_000_000 + 1_000_000,
-			AttributesJSON: "{}",
-		})
+		batch.Events = append(batch.Events, spanEvent(
+			tid, []byte{byte(i), 0, 0, 0, 0, 0, 0, 1}, nil,
+			"widget", fmt.Sprintf("r%d", i), "SERVER", 0,
+			now-int64(i)*1_000_000, now-int64(i)*1_000_000+1_000_000, "",
+			"{}"))
 	}
 	if err := f.st.WriteBatch(f.ctx, batch); err != nil {
 		t.Fatal(err)

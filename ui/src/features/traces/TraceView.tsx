@@ -266,8 +266,8 @@ function Header({
       }}
     >
       <Link
-        to="/traces"
-        search={{} as never}
+        to="/events"
+        search={{ dataset: "spans" } as never}
         className="inline-flex items-center gap-1 text-sm hover:underline"
         style={{ color: "var(--color-ink-muted)" }}
       >
@@ -352,8 +352,8 @@ function NotFound({
         {traceID}
       </code>
       <Link
-        to="/traces"
-        search={{} as never}
+        to="/events"
+        search={{ dataset: "spans" } as never}
         className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium text-white mt-2"
         style={{ background: "var(--color-accent)" }}
       >

@@ -5,8 +5,24 @@
  */
 import { z } from "zod";
 
-export const DATASETS = ["spans", "logs", "metrics"] as const;
+// "events" is the mixed-signal view (no signal_type prefix filter). The
+// other three pin queries to one signal. The UI defaults to "events" and
+// lets the user narrow via a pill in the Define panel.
+export const DATASETS = ["events", "spans", "logs", "metrics"] as const;
 export type Dataset = (typeof DATASETS)[number];
+
+export function datasetLabel(d: Dataset): string {
+  switch (d) {
+    case "events":
+      return "events";
+    case "spans":
+      return "spans";
+    case "logs":
+      return "logs";
+    case "metrics":
+      return "metrics";
+  }
+}
 
 export const AGG_OPS = [
   "count",
@@ -367,6 +383,7 @@ const orderSchema = z.object({
 });
 
 export const querySearchSchema = z.object({
+  dataset: z.enum(DATASETS).default("events"),
   range: z.enum(TIME_RANGES).default("1h"),
   // Absolute start/end in milliseconds. When both are set, they override
   // `range` — this is what click-to-zoom and the custom picker write. The
@@ -398,17 +415,18 @@ export const querySearchSchema = z.object({
 export type QuerySearch = z.infer<typeof querySearchSchema>;
 
 /**
- * Normalize an empty SELECT to a sensible default. Spans and logs default
- * to COUNT (number of events per bucket). Metrics default to MAX(value) —
- * counts of metric points are meaningless; MAX captures the cumulative
- * level of a counter and the sampled value of a gauge alike.
+ * Normalize an empty SELECT to a sensible default. For every dataset we
+ * fall back to COUNT — it's meaningful on all of them. Metric events are
+ * folded one-row-per-(time, label-set), so COUNT over a window = "how
+ * many label combinations were observed"; a counter-rate or gauge
+ * aggregation requires the user to pick the specific metric name (a
+ * field like requests.total) via the Select cell.
  */
 export function selectOrDefault(
   sel: Aggregation[],
-  dataset?: Dataset,
+  _dataset?: Dataset,
 ): Aggregation[] {
   if (sel.length > 0) return sel;
-  if (dataset === "metrics") return [{ op: "max", field: "value" }];
   return [{ op: "count" }];
 }
 
@@ -462,6 +480,12 @@ export function buildCountQuery(
  * Un-bucketed version of the chart query. Returns one row per GROUP BY
  * tuple (or a single row when no GROUP BY) — the shape the Overview tab
  * renders. Cheap in SQLite even on large datasets.
+ *
+ * Rate aggregations (rate_sum / rate_avg / rate_max) require bucket_ms
+ * to be meaningful, so in the un-bucketed Overview view we fall back to
+ * the underlying aggregation — rate_sum → sum, rate_avg → avg, etc.
+ * That way a chart built around "RATE_SUM(bytes)" still produces a
+ * sensible "SUM(bytes) over the window" number on the Overview tab.
  */
 export function buildOverviewQuery(
   dataset: Dataset,
@@ -469,19 +493,33 @@ export function buildOverviewQuery(
   now = new Date(),
 ): Query {
   const resolved = resolveSearchRange(search, now);
+  const rewritten = selectOrDefault(search.select, dataset).map(downgradeRateOp);
   return {
     dataset,
     time_range: {
       from: new Date(resolved.fromMs).toISOString(),
       to: new Date(resolved.toMs).toISOString(),
     },
-    select: selectOrDefault(search.select, dataset),
+    select: rewritten,
     where: search.where,
     group_by: search.group_by,
     order_by: search.order_by,
     having: search.having,
     limit: search.limit ?? 1000,
   };
+}
+
+function downgradeRateOp(a: Aggregation): Aggregation {
+  switch (a.op) {
+    case "rate_sum":
+      return { ...a, op: "sum" };
+    case "rate_avg":
+      return { ...a, op: "avg" };
+    case "rate_max":
+      return { ...a, op: "max" };
+    default:
+      return a;
+  }
 }
 
 /** Short human summary of the SELECT list for the Define panel. */

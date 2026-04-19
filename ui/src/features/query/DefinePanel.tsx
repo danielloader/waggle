@@ -2,6 +2,7 @@ import { Play, RotateCw } from "lucide-react";
 import type { Dataset } from "../../lib/query";
 import type { QuerySearch } from "../../lib/query";
 import {
+  DATASETS,
   selectOrDefault,
   summarizeFilters,
   summarizeGroupBy,
@@ -21,6 +22,13 @@ interface Props {
   dataset: Dataset;
   search: QuerySearch;
   onChange: (next: QuerySearch) => void;
+  /**
+   * Dataset pill changes go through here, not onChange. Switching
+   * datasets resets the query-shape state (select/where/group_by/…)
+   * that likely references fields from the old dataset; the parent
+   * decides exactly what to keep.
+   */
+  onDatasetChange: (next: Dataset) => void;
   onRun: () => void;
   isRunning?: boolean;
 }
@@ -32,7 +40,7 @@ interface Props {
  * Time range picker sits outside the grid next to the title so it's always
  * visible, and the Run button is right-aligned against the second row.
  */
-export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Props) {
+export function DefinePanel({ dataset, search, onChange, onDatasetChange, onRun, isRunning }: Props) {
   // Any service filter set in WHERE scopes the field autocomplete in the
   // GROUP BY picker / AddFilterButton so we only fetch relevant keys.
   const serviceFilter = search.where.find(
@@ -57,12 +65,10 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
       <div className="flex items-center justify-between px-4 pt-3 pb-1 gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           <h1 className="text-lg font-semibold">Query in</h1>
-          <span
-            className="px-2 py-0.5 rounded border text-sm font-medium"
-            style={{ background: "var(--color-card)", borderColor: "var(--color-border)" }}
-          >
-            {datasetLabel}
-          </span>
+          <DatasetSelect
+            value={datasetLabel}
+            onChange={onDatasetChange}
+          />
           <span style={{ color: "var(--color-ink-muted)" }}>·</span>
           <ServicePicker
             where={search.where}
@@ -107,6 +113,8 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
             value={summarizeSelect(search.select, dataset)}
             editor={
               <SelectEditor
+                dataset={dataset}
+                service={service}
                 select={search.select}
                 onChange={(select) => onChange({ ...search, select })}
               />
@@ -190,6 +198,41 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function DatasetSelect({
+  value,
+  onChange,
+}: {
+  value: Dataset;
+  onChange: (next: Dataset) => void;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as Dataset)}
+        className="appearance-none pl-2.5 pr-6 py-0.5 rounded border text-sm font-medium cursor-pointer"
+        style={{
+          background: "var(--color-card)",
+          borderColor: "var(--color-border)",
+          color: "var(--color-ink)",
+        }}
+      >
+        {DATASETS.map((d) => (
+          <option key={d} value={d}>
+            {d}
+          </option>
+        ))}
+      </select>
+      <span
+        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-xs"
+        style={{ color: "var(--color-ink-muted)" }}
+      >
+        ▾
+      </span>
     </div>
   );
 }

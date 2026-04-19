@@ -7,9 +7,10 @@ import (
 )
 
 // Build translates a validated Query into a parameterized SQL statement
-// against the `spans` or `logs` table. Field references route to real
-// columns when the key is whitelisted for the dataset; otherwise they
-// fall through to json_extract(attributes, '$."<key>"').
+// against the unified `events` table. Dataset selects a signal_type='…'
+// preset filter prepended to the WHERE clause. Field references route to
+// real columns when the key is whitelisted; otherwise they fall through
+// to json_extract(attributes, '$."<key>"').
 //
 // An empty Select means raw-rows mode: Build emits SELECT <fixed columns>
 // and lets the caller iterate events instead of aggregates.
@@ -24,8 +25,8 @@ func Build(q *Query) (Compiled, error) {
 	return b.build()
 }
 
-// buildRaw emits SELECT <fixed columns> FROM spans|logs WHERE <filters>
-// ORDER BY <time col> DESC LIMIT ?. Used when the user wants the matching
+// buildRaw emits SELECT <fixed columns> FROM events WHERE <filters>
+// ORDER BY time_ns DESC LIMIT ?. Used when the user wants the matching
 // events rather than an aggregation — the UI's "results" table mode.
 func (b *builder) buildRaw() (Compiled, error) {
 	cols, colSQL := rawColumnsFor(b.q.Dataset)
@@ -37,7 +38,8 @@ func (b *builder) buildRaw() (Compiled, error) {
 	}
 
 	timeCol := b.datasetTimeColumn()
-	whereParts := []string{fmt.Sprintf("%s >= ? AND %s < ?", timeCol, timeCol)}
+	whereParts := []string{b.signalTypeFilter(),
+		fmt.Sprintf("%s >= ? AND %s < ?", timeCol, timeCol)}
 	b.args = append(b.args, b.q.TimeRange.From.UnixNano(), b.q.TimeRange.To.UnixNano())
 	for _, f := range b.q.Where {
 		clause, err := b.filter(f)
@@ -97,22 +99,59 @@ func (b *builder) buildRaw() (Compiled, error) {
 // positional output into typed rows.
 func rawColumnsFor(d Dataset) ([]Column, []string) {
 	switch d {
-	case DatasetMetrics:
+	case DatasetEvents:
+		// Mixed-signal view. Every row carries signal_type; per-signal
+		// fields are NULL when they don't apply. The UI renders each row
+		// polymorphically based on signal_type.
 		cols := []Column{
 			{Name: "time_ns", Type: "time"},
+			{Name: "signal_type", Type: "string"},
 			{Name: "service_name", Type: "string"},
 			{Name: "name", Type: "string"},
-			{Name: "kind", Type: "string"},
+			{Name: "trace_id", Type: "string"},
+			{Name: "span_id", Type: "string"},
+			{Name: "duration_ns", Type: "int"},
+			{Name: "status_code", Type: "int"},
+			{Name: "severity_number", Type: "int"},
+			{Name: "severity_text", Type: "string"},
+			{Name: "body", Type: "string"},
+			{Name: "metric_kind", Type: "string"},
 			{Name: "value", Type: "float"},
 			{Name: "attributes", Type: "string"},
 		}
 		exprs := []string{
-			"p.time_ns",
-			"s.service_name",
-			"s.name",
-			"s.kind",
-			"p.value",
-			"s.attributes",
+			"time_ns",
+			"signal_type",
+			"service_name",
+			"name",
+			"hex(trace_id)",
+			"hex(span_id)",
+			"duration_ns",
+			"status_code",
+			"severity_number",
+			"severity_text",
+			"body",
+			"metric_kind",
+			"value",
+			"attributes",
+		}
+		return cols, exprs
+	case DatasetMetrics:
+		// Metrics are folded wide-events: one row per unique (time, label
+		// set) with metric names as attribute keys. No dedicated name /
+		// kind / value columns — the UI unpacks attributes client-side
+		// and shows (time, service, attributes) by default.
+		cols := []Column{
+			{Name: "time_ns", Type: "time"},
+			{Name: "service_name", Type: "string"},
+			{Name: "dataset", Type: "string"},
+			{Name: "attributes", Type: "string"},
+		}
+		exprs := []string{
+			"time_ns",
+			"service_name",
+			"dataset",
+			"attributes",
 		}
 		return cols, exprs
 	case DatasetLogs:
@@ -144,7 +183,7 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 			{Name: "parent_span_id", Type: "string"},
 			{Name: "service_name", Type: "string"},
 			{Name: "name", Type: "string"},
-			{Name: "kind", Type: "int"},
+			{Name: "kind", Type: "string"},
 			{Name: "start_time_ns", Type: "time"},
 			{Name: "duration_ns", Type: "int"},
 			{Name: "status_code", Type: "int"},
@@ -157,12 +196,12 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 			"hex(parent_span_id)",
 			"service_name",
 			"name",
-			"kind",
-			"start_time_ns",
+			"span_kind",
+			"time_ns",
 			"duration_ns",
-			"status_code",
+			"COALESCE(status_code, 0)",
 			// Keep in sync with the synthetic `error` field in realColumn().
-			`(status_code = 2 OR EXISTS (SELECT 1 FROM span_events e WHERE e.trace_id = spans.trace_id AND e.span_id = spans.span_id AND e.name = 'exception'))`,
+			`(status_code = 2 OR EXISTS (SELECT 1 FROM span_events se WHERE se.trace_id = events.trace_id AND se.span_id = events.span_id AND se.name = 'exception'))`,
 			"attributes",
 		}
 		return cols, exprs
@@ -269,11 +308,10 @@ func (b *builder) build() (Compiled, error) {
 	}
 
 	// 4) WHERE
-	whereParts := []string{}
-
-	// Time range always applies.
-	whereParts = append(whereParts,
-		fmt.Sprintf("%s >= ? AND %s < ?", b.datasetTimeColumn(), b.datasetTimeColumn()))
+	// Start with the signal_type prefix (events-table discriminator) +
+	// the time range; both always apply.
+	whereParts := []string{b.signalTypeFilter(),
+		fmt.Sprintf("%s >= ? AND %s < ?", b.datasetTimeColumn(), b.datasetTimeColumn())}
 	b.args = append(b.args, b.q.TimeRange.From.UnixNano(), b.q.TimeRange.To.UnixNano())
 
 	for _, f := range b.q.Where {
@@ -377,140 +415,126 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 	}, nil
 }
 
-// realColumn returns the dataset-native column for a user-facing field name,
+// realColumn returns the events-table column for a user-facing field name,
 // if one exists. Generated-column shortcuts are preferred over raw JSON
 // access so the planner picks up the corresponding indexes.
+//
+// The resolver is dataset-aware only for fields whose SQL expression
+// differs by signal (e.g. synthetic `error` combines status_code for spans
+// with severity_number for logs). Most fields resolve identically across
+// signals — name, service.name, trace_id, http.route, etc. all live in the
+// same columns regardless of signal type.
 func (b *builder) realColumn(name string) (resolvedField, bool) {
+	// Columns present on BOTH events and metric_events.
+	switch name {
+	case "service.name":
+		return resolvedField{SQL: "service_name", Type: "string"}, true
+	case "time_ns":
+		return resolvedField{SQL: "time_ns", Type: "time"}, true
+	case "meta.dataset", "dataset":
+		return resolvedField{SQL: "dataset", Type: "string"}, true
+	}
+
+	// Metric queries run against metric_events which doesn't have the
+	// span/log-specific columns. Everything else falls through to a
+	// json_extract on attributes — including metric-name keys like
+	// "requests.total" which the user references as first-class fields.
+	if b.q.Dataset == DatasetMetrics {
+		return resolvedField{}, false
+	}
+
+	// From here down we're on the events table (spans + logs).
+	switch name {
+	case "name":
+		return resolvedField{SQL: "name", Type: "string"}, true
+	case "trace_id":
+		return resolvedField{SQL: "trace_id", Type: "string"}, true
+	case "span_id":
+		return resolvedField{SQL: "span_id", Type: "string"}, true
+	case "parent_span_id":
+		return resolvedField{SQL: "parent_span_id", Type: "string"}, true
+	case "meta.signal_type", "signal_type":
+		return resolvedField{SQL: "signal_type", Type: "string"}, true
+	case "meta.span_kind":
+		return resolvedField{SQL: "span_kind", Type: "string"}, true
+	case "meta.annotation_type":
+		return resolvedField{SQL: "annotation_type", Type: "string"}, true
+	case "http.request.method":
+		return resolvedField{SQL: "http_method", Type: "string"}, true
+	case "http.response.status_code":
+		return resolvedField{SQL: "http_status_code", Type: "int"}, true
+	case "http.route":
+		return resolvedField{SQL: "http_route", Type: "string"}, true
+	case "rpc.service":
+		return resolvedField{SQL: "rpc_service", Type: "string"}, true
+	case "db.system":
+		return resolvedField{SQL: "db_system", Type: "string"}, true
+	}
+
+	// Signal-specific synthetic fields.
 	switch b.q.Dataset {
 	case DatasetSpans:
 		switch name {
-		case "service.name":
-			return resolvedField{SQL: "service_name", Type: "string"}, true
-		case "name":
-			return resolvedField{SQL: "name", Type: "string"}, true
 		case "kind":
-			return resolvedField{SQL: "kind", Type: "int"}, true
+			// Shorthand for meta.span_kind — returns the same string column.
+			return resolvedField{SQL: "span_kind", Type: "string"}, true
 		case "status_code":
-			return resolvedField{SQL: "status_code", Type: "int"}, true
+			return resolvedField{SQL: "COALESCE(status_code, 0)", Type: "int"}, true
 		case "duration_ns":
 			return resolvedField{SQL: "duration_ns", Type: "int"}, true
 		case "duration_ms":
 			return resolvedField{SQL: "(duration_ns / 1000000)", Type: "int"}, true
 		case "start_time_ns":
-			return resolvedField{SQL: "start_time_ns", Type: "time"}, true
-		case "parent_span_id":
-			// Raw column; useful with exists/!exists to scope to root spans.
-			return resolvedField{SQL: "parent_span_id", Type: "string"}, true
-		case "trace_id":
-			return resolvedField{SQL: "trace_id", Type: "string"}, true
+			// Alias — spans emit time_ns as their start timestamp.
+			return resolvedField{SQL: "time_ns", Type: "time"}, true
 		case "is_root":
-			// Honeycomb-style synthetic meta field: 1 when the span is the
-			// root of its trace (parent_span_id IS NULL), 0 otherwise.
-			// Compare against 1/true or 0/false.
 			return resolvedField{SQL: "(parent_span_id IS NULL)", Type: "bool"}, true
 		case "error":
-			// Honeycomb-style synthetic: true when the span should be
-			// considered an error. OTel has two independent signals —
-			// Status.Code == ERROR and a recorded exception event — and
-			// either one flags the span. Qualify the outer columns so the
-			// correlated subquery resolves unambiguously when spans is the
-			// only table in FROM.
 			return resolvedField{SQL: `(status_code = 2 OR EXISTS (` +
-				`SELECT 1 FROM span_events e ` +
-				`WHERE e.trace_id = spans.trace_id ` +
-				`AND e.span_id = spans.span_id ` +
-				`AND e.name = 'exception'))`, Type: "bool"}, true
-		case "http.request.method":
-			return resolvedField{SQL: "http_method", Type: "string"}, true
-		case "http.response.status_code":
-			return resolvedField{SQL: "http_status_code", Type: "int"}, true
-		case "http.route":
-			return resolvedField{SQL: "http_route", Type: "string"}, true
-		case "rpc.service":
-			return resolvedField{SQL: "rpc_service", Type: "string"}, true
-		case "db.system":
-			return resolvedField{SQL: "db_system", Type: "string"}, true
+				`SELECT 1 FROM span_events se ` +
+				`WHERE se.trace_id = events.trace_id ` +
+				`AND se.span_id = events.span_id ` +
+				`AND se.name = 'exception'))`, Type: "bool"}, true
 		}
 	case DatasetLogs:
 		switch name {
-		case "service.name":
-			return resolvedField{SQL: "service_name", Type: "string"}, true
 		case "severity_number":
 			return resolvedField{SQL: "severity_number", Type: "int"}, true
 		case "severity_text":
 			return resolvedField{SQL: "severity_text", Type: "string"}, true
 		case "body":
 			return resolvedField{SQL: "body", Type: "string"}, true
-		case "time_ns":
-			return resolvedField{SQL: "time_ns", Type: "time"}, true
 		case "error":
-			// Synthetic parallel of the span-side error field: true when
-			// the log record is severity ERROR or above (severity_number
-			// ≥ 17 per OTel log data model).
 			return resolvedField{SQL: "(severity_number >= 17)", Type: "bool"}, true
-		}
-	case DatasetMetrics:
-		// Metric queries join metric_points (p) to metric_series (s);
-		// point-level fields live on p, series-level facets on s.
-		switch name {
-		case "name":
-			return resolvedField{SQL: "s.name", Type: "string"}, true
-		case "service.name":
-			return resolvedField{SQL: "s.service_name", Type: "string"}, true
-		case "kind":
-			return resolvedField{SQL: "s.kind", Type: "string"}, true
-		case "unit":
-			return resolvedField{SQL: "s.unit", Type: "string"}, true
-		case "temporality":
-			return resolvedField{SQL: "s.temporality", Type: "string"}, true
-		case "value":
-			return resolvedField{SQL: "p.value", Type: "float"}, true
-		case "time_ns":
-			return resolvedField{SQL: "p.time_ns", Type: "time"}, true
-		case "start_time_ns":
-			return resolvedField{SQL: "p.start_time_ns", Type: "time"}, true
-		case "series_id":
-			return resolvedField{SQL: "p.series_id", Type: "int"}, true
 		}
 	}
 	return resolvedField{}, false
 }
 
-func (b *builder) datasetTimeColumn() string {
+// signalTypeFilter emits the WHERE prefix that pins queries to the rows
+// a dataset cares about. For spans/logs this is a signal_type predicate
+// on the events table (hits idx_events_signal_time). For metrics the
+// table itself (metric_events) is the filter, so no predicate is needed.
+func (b *builder) signalTypeFilter() string {
 	switch b.q.Dataset {
+	case DatasetSpans:
+		return "signal_type = 'span'"
 	case DatasetLogs:
-		return "time_ns"
-	case DatasetMetrics:
-		// Points live on metric_points; attributes on metric_series (see
-		// datasetFromClause). Time qualifier matches the aliased point
-		// table so the planner picks idx_metric_points_time.
-		return "p.time_ns"
+		return "signal_type = 'log'"
 	}
-	return "start_time_ns"
+	return "1=1"
 }
 
-// datasetFromClause returns the table expression for the FROM clause.
-// Spans + logs are single-table; metrics JOIN points to series so the
-// same attribute-key autocomplete and series-metadata columns resolve
-// like any other field.
+func (b *builder) datasetTimeColumn() string { return "time_ns" }
+
 func (b *builder) datasetFromClause() string {
-	switch b.q.Dataset {
-	case DatasetMetrics:
-		return "metric_points p JOIN metric_series s ON s.series_id = p.series_id"
-	default:
-		return string(b.q.Dataset)
+	if b.q.Dataset == DatasetMetrics {
+		return "metric_events"
 	}
+	return "events"
 }
 
-// attributesColumn is the SQL expression used as the first argument to
-// json_extract for attribute-key fallbacks. For metrics the attributes
-// live on the series, not the point, so the qualified alias is needed.
-func (b *builder) attributesColumn() string {
-	if b.q.Dataset == DatasetMetrics {
-		return "s.attributes"
-	}
-	return "attributes"
-}
+func (b *builder) attributesColumn() string { return "attributes" }
 
 func (b *builder) aggregation(a Aggregation) (string, string, error) {
 	if isPercentileOp(a.Op) {
