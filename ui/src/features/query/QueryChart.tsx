@@ -29,7 +29,6 @@ import type { QueryResult } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 
 export type MissingValuesMode = "auto" | "zero" | "omit";
-export type AxisScale = "linear" | "log";
 
 interface Props {
   result: QueryResult | undefined;
@@ -57,8 +56,6 @@ interface Props {
    * omits everything else; "zero" always zero-fills; "omit" never does.
    */
   missingValues?: MissingValuesMode;
-  /** Y-axis scale. Defaults to linear. */
-  scale?: AxisScale;
 }
 
 /** aggregationIndices returns one entry per aggregation column in the
@@ -96,7 +93,6 @@ export function QueryChart({
   onBucketClick,
   aggIdx,
   missingValues = "auto",
-  scale = "linear",
 }: Props) {
   // Default to the first aggregation when the caller didn't specify one —
   // keeps the single-SELECT case behaving as before.
@@ -200,12 +196,6 @@ export function QueryChart({
               fontSize={11}
               width={48}
               tickFormatter={formatSI}
-              scale={scale}
-              // Recharts needs explicit finite domain for log scale; auto
-              // includes 0 which is invalid on log. For linear, "auto"
-              // still uses the data range.
-              domain={scale === "log" ? ["auto", "auto"] : undefined}
-              allowDataOverflow={scale === "log"}
             />
             {tooltip}
             <Area

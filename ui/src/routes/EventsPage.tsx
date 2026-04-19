@@ -8,7 +8,6 @@ import { DefinePanel } from "../features/query/DefinePanel";
 import {
   aggregationIndices,
   QueryChart,
-  type AxisScale,
   type MissingValuesMode,
 } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
@@ -176,10 +175,9 @@ function hasMetricField(search: QuerySearch): boolean {
 // the time window / bucket size so they stay aligned.
 interface ChartSettings {
   missingValues: MissingValuesMode;
-  scale: AxisScale;
 }
 
-const DEFAULT_CHART_SETTINGS: ChartSettings = { missingValues: "auto", scale: "linear" };
+const DEFAULT_CHART_SETTINGS: ChartSettings = { missingValues: "auto" };
 
 function ChartStack({
   result,
@@ -233,7 +231,6 @@ function ChartStack({
           toMs={toMs}
           onBucketClick={onBucketClick}
           missingValues={settings.missingValues}
-          scale={settings.scale}
         />
       </ChartWithEdit>
     );
@@ -259,7 +256,6 @@ function ChartStack({
               onBucketClick={onBucketClick}
               aggIdx={a.idx}
               missingValues={settings.missingValues}
-              scale={settings.scale}
             />
           </ChartWithEdit>
         );
@@ -345,31 +341,6 @@ function ChartSettingsEditor({
               value={opt.v}
               checked={settings.missingValues === opt.v}
               onChange={() => onChange({ missingValues: opt.v })}
-            />
-            {opt.label}
-          </label>
-        ))}
-      </fieldset>
-      <fieldset className="flex flex-col gap-1">
-        <legend
-          className="text-[11px] uppercase tracking-wide font-medium pb-1"
-          style={{ color: "var(--color-ink-muted)" }}
-        >
-          Axis scale
-        </legend>
-        {(
-          [
-            { v: "linear", label: "Linear" },
-            { v: "log", label: "Log" },
-          ] as const
-        ).map((opt) => (
-          <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="radio"
-              name="scale"
-              value={opt.v}
-              checked={settings.scale === opt.v}
-              onChange={() => onChange({ scale: opt.v })}
             />
             {opt.label}
           </label>
