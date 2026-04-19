@@ -137,20 +137,20 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 		}
 		return cols, exprs
 	case DatasetMetrics:
+		// Metrics are folded wide-events: one row per unique (time, label
+		// set) with metric names as attribute keys. No dedicated name /
+		// kind / value columns — the UI unpacks attributes client-side
+		// and shows (time, service, attributes) by default.
 		cols := []Column{
 			{Name: "time_ns", Type: "time"},
 			{Name: "service_name", Type: "string"},
-			{Name: "name", Type: "string"},
-			{Name: "kind", Type: "string"},
-			{Name: "value", Type: "float"},
+			{Name: "dataset", Type: "string"},
 			{Name: "attributes", Type: "string"},
 		}
 		exprs := []string{
 			"time_ns",
 			"service_name",
-			"name",
-			"metric_kind",
-			"value",
+			"dataset",
 			"attributes",
 		}
 		return cols, exprs
@@ -425,14 +425,28 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 // signals — name, service.name, trace_id, http.route, etc. all live in the
 // same columns regardless of signal type.
 func (b *builder) realColumn(name string) (resolvedField, bool) {
-	// Shared across all signals.
+	// Columns present on BOTH events and metric_events.
 	switch name {
 	case "service.name":
 		return resolvedField{SQL: "service_name", Type: "string"}, true
-	case "name":
-		return resolvedField{SQL: "name", Type: "string"}, true
 	case "time_ns":
 		return resolvedField{SQL: "time_ns", Type: "time"}, true
+	case "meta.dataset", "dataset":
+		return resolvedField{SQL: "dataset", Type: "string"}, true
+	}
+
+	// Metric queries run against metric_events which doesn't have the
+	// span/log-specific columns. Everything else falls through to a
+	// json_extract on attributes — including metric-name keys like
+	// "requests.total" which the user references as first-class fields.
+	if b.q.Dataset == DatasetMetrics {
+		return resolvedField{}, false
+	}
+
+	// From here down we're on the events table (spans + logs).
+	switch name {
+	case "name":
+		return resolvedField{SQL: "name", Type: "string"}, true
 	case "trace_id":
 		return resolvedField{SQL: "trace_id", Type: "string"}, true
 	case "span_id":
@@ -445,14 +459,6 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 		return resolvedField{SQL: "span_kind", Type: "string"}, true
 	case "meta.annotation_type":
 		return resolvedField{SQL: "annotation_type", Type: "string"}, true
-	case "meta.metric_kind":
-		return resolvedField{SQL: "metric_kind", Type: "string"}, true
-	case "meta.metric_unit":
-		return resolvedField{SQL: "metric_unit", Type: "string"}, true
-	case "meta.metric_temporality":
-		return resolvedField{SQL: "metric_temporality", Type: "string"}, true
-	case "meta.metric_monotonic":
-		return resolvedField{SQL: "metric_monotonic", Type: "int"}, true
 	case "http.request.method":
 		return resolvedField{SQL: "http_method", Type: "string"}, true
 	case "http.response.status_code":
@@ -501,41 +507,32 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 		case "error":
 			return resolvedField{SQL: "(severity_number >= 17)", Type: "bool"}, true
 		}
-	case DatasetMetrics:
-		switch name {
-		case "value":
-			return resolvedField{SQL: "value", Type: "float"}, true
-		// Legacy aliases for back-compat with earlier metric-only queries.
-		case "kind":
-			return resolvedField{SQL: "metric_kind", Type: "string"}, true
-		case "unit":
-			return resolvedField{SQL: "metric_unit", Type: "string"}, true
-		case "temporality":
-			return resolvedField{SQL: "metric_temporality", Type: "string"}, true
-		}
 	}
 	return resolvedField{}, false
 }
 
-// signalTypeFilter emits the WHERE prefix that pins queries to their
-// dataset's events rows. Hits idx_events_signal_time. DatasetEvents
-// emits a trivially-true predicate — the builder still needs one WHERE
-// fragment per dataset branch for the "WHERE X AND time_ns >= ?" join.
+// signalTypeFilter emits the WHERE prefix that pins queries to the rows
+// a dataset cares about. For spans/logs this is a signal_type predicate
+// on the events table (hits idx_events_signal_time). For metrics the
+// table itself (metric_events) is the filter, so no predicate is needed.
 func (b *builder) signalTypeFilter() string {
 	switch b.q.Dataset {
 	case DatasetSpans:
 		return "signal_type = 'span'"
 	case DatasetLogs:
 		return "signal_type = 'log'"
-	case DatasetMetrics:
-		return "signal_type = 'metric'"
 	}
 	return "1=1"
 }
 
 func (b *builder) datasetTimeColumn() string { return "time_ns" }
 
-func (b *builder) datasetFromClause() string { return "events" }
+func (b *builder) datasetFromClause() string {
+	if b.q.Dataset == DatasetMetrics {
+		return "metric_events"
+	}
+	return "events"
+}
 
 func (b *builder) attributesColumn() string { return "attributes" }
 

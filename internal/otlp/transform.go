@@ -67,9 +67,33 @@ type transformer struct {
 	resources      map[uint64]store.Resource
 	scopes         map[uint64]store.Scope
 	events         []store.Event
+	metricEvents   map[metricEventKey]*metricEventRow
 	attrKeys       map[attrKeyID]*store.AttrKeyDelta
 	attrValues     map[attrValueID]*store.AttrValueDelta
 	metaOverwrites int64
+}
+
+// metricEventKey identifies one folded metric row within an export cycle:
+// a (resource, scope, time, label set) tuple. Every scalar metric observed
+// at that moment for that label set merges into the same row.
+type metricEventKey struct {
+	resourceID uint64
+	scopeID    uint64
+	timeNS     int64
+	// labelsHash is a hash of the datapoint's label attributes — the label
+	// set that uniquely identifies one time-series. Merge keyed on this
+	// plus the time/scope/resource tuple.
+	labelsHash uint64
+}
+
+type metricEventRow struct {
+	// labels holds the datapoint's label attributes (what Prometheus calls
+	// "series labels" and OTel calls DataPoint.Attributes). Kept separate
+	// from metrics so we can serialise the merged attributes at finish time.
+	labels      map[string]any
+	metrics     map[string]any // metric name → value
+	serviceName string
+	dataset     string
 }
 
 type attrKeyID struct {
@@ -88,11 +112,12 @@ type attrValueID struct {
 
 func newTransformer() *transformer {
 	return &transformer{
-		now:        time.Now().UnixNano(),
-		resources:  map[uint64]store.Resource{},
-		scopes:     map[uint64]store.Scope{},
-		attrKeys:   map[attrKeyID]*store.AttrKeyDelta{},
-		attrValues: map[attrValueID]*store.AttrValueDelta{},
+		now:          time.Now().UnixNano(),
+		resources:    map[uint64]store.Resource{},
+		scopes:       map[uint64]store.Scope{},
+		metricEvents: map[metricEventKey]*metricEventRow{},
+		attrKeys:     map[attrKeyID]*store.AttrKeyDelta{},
+		attrValues:   map[attrValueID]*store.AttrValueDelta{},
 	}
 }
 
@@ -105,6 +130,29 @@ func (t *transformer) finish() store.Batch {
 		b.Scopes = append(b.Scopes, s)
 	}
 	b.Events = t.events
+	// Serialise folded metric rows. Each row's attributes = label set +
+	// metric-name keys + meta.dataset.
+	for key, row := range t.metricEvents {
+		merged := make(map[string]any, len(row.labels)+len(row.metrics)+1)
+		for k, v := range row.labels {
+			merged[k] = v
+		}
+		for k, v := range row.metrics {
+			merged[k] = v
+		}
+		merged["meta.dataset"] = row.dataset
+		raw, err := json.Marshal(merged)
+		if err != nil {
+			continue
+		}
+		b.MetricEvents = append(b.MetricEvents, store.MetricEvent{
+			TimeNS:         key.timeNS,
+			ResourceID:     key.resourceID,
+			ScopeID:        key.scopeID,
+			ServiceName:    row.serviceName,
+			AttributesJSON: string(raw),
+		})
+	}
 	for _, d := range t.attrKeys {
 		b.AttrKeys = append(b.AttrKeys, *d)
 	}
@@ -115,29 +163,29 @@ func (t *transformer) finish() store.Batch {
 }
 
 func (t *transformer) ingestResourceSpans(rs *tracepb.ResourceSpans) {
-	resID, service := t.registerResource(rs.Resource)
+	resID, service, dataset := t.registerResource(rs.Resource)
 
 	for _, ss := range rs.ScopeSpans {
 		scopeID := t.registerScope(ss.Scope)
 		for _, sp := range ss.Spans {
-			t.ingestSpan(sp, resID, scopeID, service)
+			t.ingestSpan(sp, resID, scopeID, service, dataset)
 		}
 	}
 }
 
 func (t *transformer) ingestResourceLogs(rl *logspb.ResourceLogs) {
-	resID, service := t.registerResource(rl.Resource)
+	resID, service, dataset := t.registerResource(rl.Resource)
 
 	for _, sl := range rl.ScopeLogs {
 		scopeID := t.registerScope(sl.Scope)
 		for _, lr := range sl.LogRecords {
-			t.ingestLog(lr, resID, scopeID, service)
+			t.ingestLog(lr, resID, scopeID, service, dataset)
 		}
 	}
 }
 
-func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string) {
-	attrs, service, ns, ver, inst, sdkN, sdkL, sdkV := explodeResource(r)
+func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string, string) {
+	attrs, service, dataset, ns, ver, inst, sdkN, sdkL, sdkV := explodeResource(r)
 	id := hash64("res", canonicalJSON(attrs))
 	flat := attrsToJSON(attrs)
 
@@ -157,7 +205,7 @@ func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string) 
 		}
 		t.noteAttrKeys("resource", "", r.GetAttributes())
 	}
-	return id, service
+	return id, service, dataset
 }
 
 func (t *transformer) registerScope(sc *commonpb.InstrumentationScope) uint64 {
@@ -179,10 +227,11 @@ func (t *transformer) registerScope(sc *commonpb.InstrumentationScope) uint64 {
 	return id
 }
 
-func (t *transformer) ingestSpan(sp *tracepb.Span, resID, scopeID uint64, service string) {
+func (t *transformer) ingestSpan(sp *tracepb.Span, resID, scopeID uint64, service, dataset string) {
 	meta := map[string]any{
 		"meta.signal_type": store.SignalSpan,
 		"meta.span_kind":   spanKindString(sp.Kind),
+		"meta.dataset":     dataset,
 	}
 	attrsJSON := t.buildAttrs(sp.Attributes, meta)
 
@@ -240,10 +289,11 @@ func (t *transformer) ingestSpan(sp *tracepb.Span, resID, scopeID uint64, servic
 	t.noteAttrValues(store.SignalSpan, service, sp.Attributes)
 }
 
-func (t *transformer) ingestLog(lr *logspb.LogRecord, resID, scopeID uint64, service string) {
+func (t *transformer) ingestLog(lr *logspb.LogRecord, resID, scopeID uint64, service, dataset string) {
 	body, bodyJSON := flattenAnyValue(lr.Body)
 	meta := map[string]any{
 		"meta.signal_type": store.SignalLog,
+		"meta.dataset":     dataset,
 	}
 	// If the body was structured, stash the JSON form as an attribute so it's
 	// still queryable without a dedicated body_json column.
@@ -280,39 +330,46 @@ func (t *transformer) ingestLog(lr *logspb.LogRecord, resID, scopeID uint64, ser
 	t.noteAttrValues(store.SignalLog, service, lr.Attributes)
 }
 
-// ingestResourceMetrics walks a ResourceMetrics envelope, registers the
-// resource + scopes, and routes each Metric to the per-kind decoder.
-// Histogram / ExpHistogram / Summary metrics are noted in the attribute
-// catalog (so their series keys appear in /api/fields) but no Event rows
-// are emitted — distribution support lands separately.
+// ingestResourceMetrics walks a ResourceMetrics envelope and folds every
+// scalar metric DataPoint into a MetricEvent row keyed on (resource, scope,
+// time, label set). Multiple metrics observed at the same moment with the
+// same label set merge into one row — Honeycomb-style "one event per
+// unique (time, attribute set)" with metric names as attribute keys.
+//
+// Histograms unpack to <name>.p50 / .p95 / .p99 / .sum / .count / .min /
+// .max fields on the same folded row. ExponentialHistogram + Summary are
+// catalogue-only for now (distribution support lands later).
 func (t *transformer) ingestResourceMetrics(rm *metricspb.ResourceMetrics) {
-	resID, service := t.registerResource(rm.Resource)
+	resID, service, dataset := t.registerResource(rm.Resource)
 	for _, sm := range rm.ScopeMetrics {
 		scopeID := t.registerScope(sm.Scope)
 		for _, m := range sm.Metrics {
-			t.ingestMetric(m, resID, scopeID, service)
+			t.ingestMetric(m, resID, scopeID, service, dataset)
 		}
 	}
 }
 
 func (t *transformer) ingestMetric(
-	m *metricspb.Metric, resID, scopeID uint64, service string,
+	m *metricspb.Metric, resID, scopeID uint64, service, dataset string,
 ) {
 	switch data := m.Data.(type) {
 	case *metricspb.Metric_Sum:
-		temp := temporalityString(data.Sum.GetAggregationTemporality())
-		mono := data.Sum.GetIsMonotonic()
 		for _, p := range data.Sum.GetDataPoints() {
-			t.ingestNumberPoint(m, "sum", temp, &mono, p, resID, scopeID, service)
+			if v, ok := numberPointValue(p); ok {
+				t.foldMetric(m.Name, v, p.Attributes, int64(p.TimeUnixNano),
+					resID, scopeID, service, dataset)
+			}
 		}
 	case *metricspb.Metric_Gauge:
 		for _, p := range data.Gauge.GetDataPoints() {
-			t.ingestNumberPoint(m, "gauge", "", nil, p, resID, scopeID, service)
+			if v, ok := numberPointValue(p); ok {
+				t.foldMetric(m.Name, v, p.Attributes, int64(p.TimeUnixNano),
+					resID, scopeID, service, dataset)
+			}
 		}
 	case *metricspb.Metric_Histogram:
 		for _, p := range data.Histogram.GetDataPoints() {
-			t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
-			t.noteAttrValues(store.SignalMetric, service, p.Attributes)
+			t.foldHistogram(m.Name, p, resID, scopeID, service, dataset)
 		}
 	case *metricspb.Metric_ExponentialHistogram:
 		for _, p := range data.ExponentialHistogram.GetDataPoints() {
@@ -327,67 +384,164 @@ func (t *transformer) ingestMetric(
 	}
 }
 
-// ingestNumberPoint handles Sum + Gauge data points. Emits one Event per
-// datapoint — no series dedup; every datapoint carries its own attrs.
-func (t *transformer) ingestNumberPoint(
-	m *metricspb.Metric, kind, temporality string, monotonic *bool,
-	p *metricspb.NumberDataPoint,
-	resID, scopeID uint64, service string,
-) {
-	var value float64
+func numberPointValue(p *metricspb.NumberDataPoint) (float64, bool) {
 	switch v := p.Value.(type) {
 	case *metricspb.NumberDataPoint_AsDouble:
-		value = v.AsDouble
+		return v.AsDouble, true
 	case *metricspb.NumberDataPoint_AsInt:
-		value = float64(v.AsInt)
-	default:
-		return
+		return float64(v.AsInt), true
 	}
-
-	meta := map[string]any{
-		"meta.signal_type": store.SignalMetric,
-		"meta.metric_kind": kind,
-	}
-	if m.Unit != "" {
-		meta["meta.metric_unit"] = m.Unit
-	}
-	if temporality != "" {
-		meta["meta.metric_temporality"] = temporality
-	}
-	if monotonic != nil {
-		if *monotonic {
-			meta["meta.metric_monotonic"] = 1
-		} else {
-			meta["meta.metric_monotonic"] = 0
-		}
-	}
-	if m.Description != "" {
-		meta["meta.metric_description"] = m.Description
-	}
-	attrsJSON := t.buildAttrs(p.Attributes, meta)
-
-	row := store.Event{
-		TimeNS:         int64(p.TimeUnixNano),
-		ResourceID:     resID,
-		ScopeID:        scopeID,
-		ServiceName:    service,
-		Name:           m.Name,
-		Value:          &value,
-		AttributesJSON: attrsJSON,
-	}
-	t.events = append(t.events, row)
-	t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
-	t.noteAttrValues(store.SignalMetric, service, p.Attributes)
+	return 0, false
 }
 
-func temporalityString(t metricspb.AggregationTemporality) string {
-	switch t {
-	case metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA:
-		return "delta"
-	case metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE:
-		return "cumulative"
+// foldMetric adds a single scalar metric observation to the folded row
+// identified by (resource, scope, time, label set). Creates the row if
+// absent; merges a new metric-name key on existing rows.
+func (t *transformer) foldMetric(
+	metricName string, value float64, labels []*commonpb.KeyValue,
+	timeNS int64, resID, scopeID uint64, service, dataset string,
+) {
+	row := t.foldRow(labels, timeNS, resID, scopeID, service, dataset)
+	row.metrics[metricName] = value
+	t.noteAttrKeys(store.SignalMetric, service, labels)
+	t.noteAttrValues(store.SignalMetric, service, labels)
+	// Record the metric-name key itself in the catalog so autocomplete
+	// surfaces it as a queryable field.
+	t.noteMetricName(service, metricName, "flt")
+}
+
+// foldHistogram expands a histogram point into <name>.count/.sum/.min/.max/
+// .p50/.p95/.p99 fields on the folded row. Percentiles come from bucket
+// bounds via linear interpolation — same trick Honeycomb uses to surface
+// histograms as queryable fields.
+func (t *transformer) foldHistogram(
+	metricName string, p *metricspb.HistogramDataPoint,
+	resID, scopeID uint64, service, dataset string,
+) {
+	row := t.foldRow(p.Attributes, int64(p.TimeUnixNano), resID, scopeID, service, dataset)
+	row.metrics[metricName+".count"] = p.Count
+	row.metrics[metricName+".sum"] = p.GetSum()
+	if p.Min != nil {
+		row.metrics[metricName+".min"] = *p.Min
 	}
-	return ""
+	if p.Max != nil {
+		row.metrics[metricName+".max"] = *p.Max
+	}
+	for _, q := range []float64{0.5, 0.95, 0.99} {
+		pct := histogramPercentile(p, q)
+		row.metrics[fmt.Sprintf("%s.p%d", metricName, int(q*100))] = pct
+	}
+	t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
+	t.noteAttrValues(store.SignalMetric, service, p.Attributes)
+	for _, suffix := range []string{".count", ".sum", ".min", ".max", ".p50", ".p95", ".p99"} {
+		t.noteMetricName(service, metricName+suffix, "flt")
+	}
+}
+
+// foldRow looks up or creates the folded row for a given datapoint tuple.
+func (t *transformer) foldRow(
+	labels []*commonpb.KeyValue, timeNS int64,
+	resID, scopeID uint64, service, dataset string,
+) *metricEventRow {
+	labelsMap := attrsToMap(labels)
+	key := metricEventKey{
+		resourceID: resID,
+		scopeID:    scopeID,
+		timeNS:     timeNS,
+		labelsHash: hashLabels(labelsMap),
+	}
+	row, ok := t.metricEvents[key]
+	if !ok {
+		row = &metricEventRow{
+			labels:      labelsMap,
+			metrics:     map[string]any{},
+			serviceName: service,
+			dataset:     dataset,
+		}
+		t.metricEvents[key] = row
+	}
+	return row
+}
+
+// hashLabels produces a stable hash of a label set so two datapoints with
+// identical labels fold into the same row.
+func hashLabels(labels map[string]any) uint64 {
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := fnv.New64a()
+	for _, k := range keys {
+		_, _ = h.Write([]byte(k))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(fmt.Sprint(labels[k])))
+		_, _ = h.Write([]byte{0})
+	}
+	return h.Sum64()
+}
+
+// noteMetricName records a metric-name key in the attribute_keys catalog
+// under signal_type='metric'. Autocomplete then surfaces metric names as
+// regular fields alongside user attributes.
+func (t *transformer) noteMetricName(service, name, valueType string) {
+	id := attrKeyID{store.SignalMetric, service, name, valueType}
+	if d, ok := t.attrKeys[id]; ok {
+		d.Count++
+		d.LastSeenNS = t.now
+		return
+	}
+	t.attrKeys[id] = &store.AttrKeyDelta{
+		SignalType: store.SignalMetric, ServiceName: service,
+		Key: name, ValueType: valueType, Count: 1, LastSeenNS: t.now,
+	}
+}
+
+// histogramPercentile computes the q-th percentile from a bucketed
+// histogram via linear interpolation. OTel histograms ship explicit
+// bucket bounds + counts; we assume uniform distribution within each
+// bucket — same approximation Prometheus uses for histogram_quantile().
+func histogramPercentile(p *metricspb.HistogramDataPoint, q float64) float64 {
+	if p.Count == 0 {
+		return 0
+	}
+	target := float64(p.Count) * q
+	bounds := p.ExplicitBounds
+	counts := p.BucketCounts
+	if len(counts) == 0 {
+		return 0
+	}
+	var cum uint64
+	for i, c := range counts {
+		cum += c
+		if float64(cum) >= target {
+			// The bucket that contains the target. Lower/upper bounds of
+			// this bucket — first bucket has -inf as lower, last has +inf
+			// as upper. Use sum-weighted mid-point for unbounded edges.
+			var lower, upper float64
+			if i == 0 {
+				lower = p.GetMin()
+			} else {
+				lower = bounds[i-1]
+			}
+			if i < len(bounds) {
+				upper = bounds[i]
+			} else {
+				upper = p.GetMax()
+			}
+			if upper == 0 && p.GetMax() == 0 {
+				upper = lower
+			}
+			// Linear interp within the bucket: how far into this bucket?
+			bucketStart := float64(cum - c)
+			frac := 0.0
+			if c > 0 {
+				frac = (target - bucketStart) / float64(c)
+			}
+			return lower + frac*(upper-lower)
+		}
+	}
+	return p.GetMax()
 }
 
 // spanKindString maps OTel's Span.Kind enum to its canonical string form,
@@ -482,12 +636,13 @@ func (t *transformer) noteAttrValues(signalType, service string, attrs []*common
 // helpers
 // =========================================================================
 
-func explodeResource(r *resourcepb.Resource) (attrs []*commonpb.KeyValue, service, ns, ver, inst, sdkN, sdkL, sdkV string) {
+func explodeResource(r *resourcepb.Resource) (attrs []*commonpb.KeyValue, service, dataset, ns, ver, inst, sdkN, sdkL, sdkV string) {
 	if r == nil {
-		return nil, "unknown", "", "", "", "", "", ""
+		return nil, "unknown", "unknown", "", "", "", "", "", ""
 	}
 	attrs = r.Attributes
 	service = "unknown"
+	var explicitDataset string
 	for _, kv := range r.Attributes {
 		switch kv.Key {
 		case "service.name":
@@ -506,7 +661,23 @@ func explodeResource(r *resourcepb.Resource) (attrs []*commonpb.KeyValue, servic
 			sdkL, _ = kvValueString(kv.Value)
 		case "telemetry.sdk.version":
 			sdkV, _ = kvValueString(kv.Value)
+		case "waggle.dataset":
+			// Explicit override: a collector forwarding from many services
+			// can stamp this on its resource to group their telemetry into a
+			// named dataset (e.g. "infra-metrics", "ingress") regardless of
+			// the individual service.name values.
+			if s, ok := kvValueString(kv.Value); ok {
+				explicitDataset = s
+			}
 		}
+	}
+	// Default dataset derivation: the explicit override wins; otherwise the
+	// dataset equals service.name. This matches Honeycomb's default where
+	// each instrumented service gets its own dataset.
+	if explicitDataset != "" {
+		dataset = explicitDataset
+	} else {
+		dataset = service
 	}
 	return
 }

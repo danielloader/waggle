@@ -33,10 +33,10 @@ const (
 	SignalMetric = "metric"
 )
 
-// Event is the single wide row that holds every telemetry signal. A span, a
-// log record, or a metric datapoint all become one Event — the signal type is
-// carried in meta.signal_type inside AttributesJSON and surfaced as a virtual
-// column. Nullable scalar fields carry signal-specific data.
+// Event is a single row in the `events` table — a span or a log record.
+// Metrics have their own table (see MetricEvent). Nullable scalar fields
+// carry signal-specific data; meta.signal_type in AttributesJSON tells
+// the reader which.
 type Event struct {
 	TimeNS         int64
 	EndTimeNS      *int64 // spans only
@@ -61,15 +61,26 @@ type Event struct {
 	Body           string
 	ObservedTimeNS *int64
 
-	// Metric-only scalar (scalar kinds only — histograms not supported yet)
-	Value *float64
-
 	AttributesJSON string
 
 	// Span events + links ride alongside when this event is a span. Writer
 	// inserts them into span_events / span_links after the parent Event.
 	SpanEvents []SpanEvent
 	SpanLinks  []SpanLink
+}
+
+// MetricEvent is one row in the `metric_events` table. The Honeycomb-style
+// folding means one row = one unique (resource, scope, time_ns, label set)
+// tuple per OTel export cycle, and every scalar metric observed at that
+// moment lands as an attribute key in AttributesJSON (e.g. the key
+// "requests.total" with value 1423). Histograms unpack to sibling keys
+// like "<name>.p50", "<name>.p99", "<name>.sum", "<name>.count".
+type MetricEvent struct {
+	TimeNS         int64
+	ResourceID     uint64
+	ScopeID        uint64
+	ServiceName    string
+	AttributesJSON string
 }
 
 type SpanEvent struct {
@@ -118,12 +129,13 @@ type AttrValueDelta struct {
 
 // Batch is the unit of work for the writer goroutine.
 type Batch struct {
-	Resources  []Resource
-	Scopes     []Scope
-	Events     []Event
-	AttrKeys   []AttrKeyDelta
-	AttrValues []AttrValueDelta
-	EnqueuedAt time.Time
+	Resources    []Resource
+	Scopes       []Scope
+	Events       []Event
+	MetricEvents []MetricEvent
+	AttrKeys     []AttrKeyDelta
+	AttrValues   []AttrValueDelta
+	EnqueuedAt   time.Time
 
 	// MetaOverwrites counts ingest events whose attributes collided with a
 	// reserved meta.* key and got overwritten. Surfaced in logs for SDK

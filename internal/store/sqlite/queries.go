@@ -15,9 +15,10 @@ import (
 // WriteBatch persists one ingest batch inside a single transaction.
 //
 // Order: resources → scopes → events → span_events → span_links →
-// attribute_keys → attribute_values. Constraints fire in that order.
+// metric_events → attribute_keys → attribute_values.
 func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
-	if len(b.Events) == 0 && len(b.Resources) == 0 && len(b.Scopes) == 0 {
+	if len(b.Events) == 0 && len(b.MetricEvents) == 0 &&
+		len(b.Resources) == 0 && len(b.Scopes) == 0 {
 		return nil
 	}
 
@@ -34,6 +35,9 @@ func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
 		return err
 	}
 	if err := writeEvents(ctx, tx, b.Events); err != nil {
+		return err
+	}
+	if err := writeMetricEvents(ctx, tx, b.MetricEvents); err != nil {
 		return err
 	}
 	if err := writeAttrKeys(ctx, tx, b.AttrKeys); err != nil {
@@ -103,8 +107,8 @@ func writeEvents(ctx context.Context, tx *sql.Tx, events []store.Event) error {
 		(time_ns, end_time_ns, resource_id, scope_id, service_name, name,
 		 trace_id, span_id, parent_span_id, status_code, status_message,
 		 trace_state, flags, severity_number, severity_text, body,
-		 observed_time_ns, value, attributes)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+		 observed_time_ns, attributes)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	stmt, err := tx.PrepareContext(ctx, q)
 	if err != nil {
 		return fmt.Errorf("prepare events: %w", err)
@@ -139,7 +143,7 @@ func writeEvents(ctx context.Context, tx *sql.Tx, events []store.Event) error {
 			nullStr(e.TraceState), nullUint32Ptr(e.Flags),
 			nullInt32Ptr(e.SeverityNumber), nullStr(e.SeverityText),
 			nullStr(e.Body), nullInt64Ptr(e.ObservedTimeNS),
-			nullFloat64Ptr(e.Value), e.AttributesJSON,
+			e.AttributesJSON,
 		); err != nil {
 			return fmt.Errorf("insert event: %w", err)
 		}
@@ -158,6 +162,29 @@ func writeEvents(ctx context.Context, tx *sql.Tx, events []store.Event) error {
 			); err != nil {
 				return fmt.Errorf("insert span_link: %w", err)
 			}
+		}
+	}
+	return nil
+}
+
+func writeMetricEvents(ctx context.Context, tx *sql.Tx, rows []store.MetricEvent) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	const q = `INSERT INTO metric_events
+		(time_ns, resource_id, scope_id, service_name, attributes)
+		VALUES (?,?,?,?,?)`
+	stmt, err := tx.PrepareContext(ctx, q)
+	if err != nil {
+		return fmt.Errorf("prepare metric_events: %w", err)
+	}
+	defer stmt.Close()
+	for _, r := range rows {
+		if _, err := stmt.ExecContext(ctx,
+			r.TimeNS, int64(r.ResourceID), int64(r.ScopeID),
+			r.ServiceName, r.AttributesJSON,
+		); err != nil {
+			return fmt.Errorf("insert metric_event: %w", err)
 		}
 	}
 	return nil
@@ -585,13 +612,13 @@ var syntheticLogFields = []store.FieldInfo{
 	{Key: "error", ValueType: "bool"},
 }
 
+// Metric events have no per-column metric identity — metric names live
+// as attribute keys inside the attributes JSON (Honeycomb-style). The
+// synthetic list covers the structural columns; metric-name fields
+// surface through attribute_keys like any other attribute.
 var syntheticMetricFields = []store.FieldInfo{
-	{Key: "name", ValueType: "str"},
 	{Key: "service.name", ValueType: "str"},
-	{Key: "meta.metric_kind", ValueType: "str"},
-	{Key: "meta.metric_unit", ValueType: "str"},
-	{Key: "meta.metric_temporality", ValueType: "str"},
-	{Key: "value", ValueType: "flt"},
+	{Key: "meta.dataset", ValueType: "str"},
 	{Key: "time_ns", ValueType: "time"},
 }
 
@@ -660,10 +687,25 @@ func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]str
 }
 
 // realColumnForValues maps a user-facing field name → events-table column when
-// the field is backed by a real or virtual column. Keep in sync with
+// the field is backed by a real or virtual column. Metric queries hit
+// metric_events which has only service_name + dataset as promoted columns;
+// metric-name values flow through attribute_values. Keep in sync with
 // realColumn() in internal/query/builder.go.
 func realColumnForValues(signalType, key string) (col string, ok bool) {
-	// Shared columns (identical column names across all signal types).
+	// Metric rows live in metric_events and don't have span/log columns.
+	// Fall through to attribute_values for anything other than the two
+	// columns metric_events actually has.
+	if signalType == store.SignalMetric {
+		switch key {
+		case "service.name":
+			return "service_name", true
+		case "meta.dataset", "dataset":
+			return "dataset", true
+		}
+		return "", false
+	}
+
+	// Shared columns on the events table.
 	switch key {
 	case "name":
 		return "name", true
@@ -683,14 +725,10 @@ func realColumnForValues(signalType, key string) (col string, ok bool) {
 		return "db_system", true
 	case "meta.span_kind":
 		return "span_kind", true
-	case "meta.metric_kind":
-		return "metric_kind", true
-	case "meta.metric_unit":
-		return "metric_unit", true
-	case "meta.metric_temporality":
-		return "metric_temporality", true
 	case "meta.annotation_type":
 		return "annotation_type", true
+	case "meta.dataset", "dataset":
+		return "dataset", true
 	}
 	switch signalType {
 	case store.SignalLog:
@@ -707,13 +745,24 @@ func (s *Store) listEventColumnValues(
 	f store.ValueFilter,
 	limit int,
 ) ([]string, error) {
-	// Scope to the active signal so values from other signals don't leak.
-	q := fmt.Sprintf(`SELECT CAST(%s AS TEXT) AS v, COUNT(*) AS n
-		FROM events
-		WHERE signal_type = ?
-		  AND %s IS NOT NULL
-		  AND CAST(%s AS TEXT) LIKE ? || '%%'`, col, col, col)
-	args := []any{f.SignalType, f.Prefix}
+	// Metric rows live in metric_events; everything else in events with a
+	// signal_type predicate.
+	var q string
+	args := []any{}
+	if f.SignalType == store.SignalMetric {
+		q = fmt.Sprintf(`SELECT CAST(%s AS TEXT) AS v, COUNT(*) AS n
+			FROM metric_events
+			WHERE %s IS NOT NULL
+			  AND CAST(%s AS TEXT) LIKE ? || '%%'`, col, col, col)
+		args = append(args, f.Prefix)
+	} else {
+		q = fmt.Sprintf(`SELECT CAST(%s AS TEXT) AS v, COUNT(*) AS n
+			FROM events
+			WHERE signal_type = ?
+			  AND %s IS NOT NULL
+			  AND CAST(%s AS TEXT) LIKE ? || '%%'`, col, col, col)
+		args = append(args, f.SignalType, f.Prefix)
+	}
 	if f.Service != "" {
 		q += ` AND service_name = ?`
 		args = append(args, f.Service)
@@ -1094,6 +1143,9 @@ func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE time_ns < ?`, olderThanNS); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM metric_events WHERE time_ns < ?`, olderThanNS); err != nil {
+		return err
+	}
 	// Span events and links get cleaned up by trace_id no-longer-referenced.
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM span_events WHERE (trace_id, span_id) NOT IN
@@ -1107,7 +1159,9 @@ func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM resources
 		WHERE last_seen_ns < ?
-		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM events)`, olderThanNS); err != nil {
+		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM events)
+		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM metric_events)`,
+		olderThanNS); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1123,6 +1177,7 @@ func (s *Store) Clear(ctx context.Context) error {
 		`DELETE FROM span_events`,
 		`DELETE FROM span_links`,
 		`DELETE FROM events`,
+		`DELETE FROM metric_events`,
 		`DELETE FROM scopes`,
 		`DELETE FROM resources`,
 		`DELETE FROM attribute_keys`,
@@ -1183,13 +1238,6 @@ func nullInt32Ptr(p *int32) any {
 }
 
 func nullUint32Ptr(p *uint32) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
-func nullFloat64Ptr(p *float64) any {
 	if p == nil {
 		return nil
 	}
