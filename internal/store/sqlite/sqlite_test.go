@@ -22,9 +22,9 @@ func TestOpenAppliesSchema(t *testing.T) {
 	// Confirm schema tables exist.
 	var name string
 	err = s.ReaderDB().QueryRowContext(ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name='spans'`).Scan(&name)
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='events'`).Scan(&name)
 	if err != nil {
-		t.Fatalf("spans table missing: %v", err)
+		t.Fatalf("events table missing: %v", err)
 	}
 }
 
@@ -39,6 +39,9 @@ func TestWriteAndReadSpan(t *testing.T) {
 	now := time.Now().UnixNano()
 	tid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 	sid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	endNS := now + 1_000_000
+	statusCode := int32(0)
+	var zeroFlags uint32
 
 	batch := store.Batch{
 		Resources: []store.Resource{{
@@ -46,11 +49,14 @@ func TestWriteAndReadSpan(t *testing.T) {
 			FirstSeenNS: now, LastSeenNS: now,
 		}},
 		Scopes: []store.Scope{{ID: 1, Name: "go.test", Version: "v1"}},
-		Spans: []store.Span{{
-			TraceID: tid, SpanID: sid, ResourceID: 1, ScopeID: 1,
-			ServiceName: "test", Name: "root", Kind: 1,
-			StartTimeNS: now, EndTimeNS: now + 1_000_000,
-			AttributesJSON: `{"http.route":"/x","http.response.status_code":200}`,
+		Events: []store.Event{{
+			TimeNS: now, EndTimeNS: &endNS,
+			ResourceID: 1, ScopeID: 1,
+			ServiceName: "test", Name: "root",
+			TraceID: tid, SpanID: sid,
+			StatusCode: &statusCode,
+			Flags:      &zeroFlags,
+			AttributesJSON: `{"meta.signal_type":"span","meta.span_kind":"INTERNAL","http.route":"/x","http.response.status_code":200}`,
 		}},
 		AttrKeys: []store.AttrKeyDelta{
 			{SignalType: "span", ServiceName: "test", Key: "http.route", ValueType: "str", Count: 1, LastSeenNS: now},

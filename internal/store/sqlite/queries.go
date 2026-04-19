@@ -1161,13 +1161,6 @@ func nullStr(s string) any {
 	return s
 }
 
-func nullInt64(v int64) any {
-	if v == 0 {
-		return nil
-	}
-	return v
-}
-
 func nullBytes(b []byte) any {
 	if len(b) == 0 {
 		return nil

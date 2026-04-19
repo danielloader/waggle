@@ -432,6 +432,9 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 	switch b.q.Dataset {
 	case DatasetSpans:
 		switch name {
+		case "kind":
+			// Shorthand for meta.span_kind — returns the same string column.
+			return resolvedField{SQL: "span_kind", Type: "string"}, true
 		case "status_code":
 			return resolvedField{SQL: "COALESCE(status_code, 0)", Type: "int"}, true
 		case "duration_ns":

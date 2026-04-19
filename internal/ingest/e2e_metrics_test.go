@@ -1,13 +1,10 @@
 package ingest_test
 
-// SDK-driven metric ingest round-trips. Stage 1 only covers Sum + Gauge
-// (see plans/metrics.md). These tests exercise the full path:
-//
-//   OTel SDK meter → otlpmetrichttp → POST /v1/metrics → ingest.Handler
-//     → ingest.Writer → store.WriteBatch → sqlite metric_series + metric_points
-//
-// We don't have /api/metrics yet, so the assertions go straight against
-// the SQLite store via its reader DB handle.
+// SDK-driven metric ingest round-trips. Sum + Gauge are written as Events
+// with signal_type='metric' and the metric-specific metadata stamped into
+// the attributes JSON under the reserved meta.* namespace
+// (meta.metric_kind, meta.metric_unit, meta.metric_temporality,
+// meta.metric_monotonic).
 
 import (
 	"context"
@@ -19,22 +16,19 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semattr "go.opentelemetry.io/otel/attribute"
 )
 
 // meterProvider builds a MeterProvider that exports to the fixture's
-// ingest endpoint on the default cumulative temporality. Uses a periodic
-// reader with a short interval so tests don't wait long.
+// ingest endpoint on the default cumulative temporality.
 func (f *e2eFixture) meterProvider(service string) *sdkmetric.MeterProvider {
 	f.t.Helper()
 	exp, err := otlpmetrichttp.New(f.ctx,
 		otlpmetrichttp.WithEndpoint(f.endpointHost()),
 		otlpmetrichttp.WithInsecure(),
-		// Explicit cumulative — we exercise delta later when stage 4
-		// brings histograms with explicit temporality selection.
 		otlpmetrichttp.WithTemporalitySelector(func(sdkmetric.InstrumentKind) metricdata.Temporality {
 			return metricdata.CumulativeTemporality
 		}),
@@ -58,10 +52,6 @@ func (f *e2eFixture) meterProvider(service string) *sdkmetric.MeterProvider {
 	)
 }
 
-// shutdownMeter flushes + shuts down a MeterProvider with a deadline.
-// The periodic reader has fired at least one export cycle by the time
-// Shutdown returns, but we also wait for the store to actually see the
-// writes before asserting.
 func (f *e2eFixture) shutdownMeter(mp *sdkmetric.MeterProvider) {
 	f.t.Helper()
 	sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -71,30 +61,33 @@ func (f *e2eFixture) shutdownMeter(mp *sdkmetric.MeterProvider) {
 	}
 }
 
-// waitForMetricSeries polls the store until at least n series exist for
-// the given service.
-func (f *e2eFixture) waitForMetricSeries(service string, n int) {
+// waitForMetricEvents polls the events table until at least n metric events
+// exist for the given service.
+func (f *e2eFixture) waitForMetricEvents(service string, n int) {
 	f.t.Helper()
-	waitFor(f.t, 3*time.Second, fmt.Sprintf("metric_series for %q >= %d", service, n), func() bool {
+	waitFor(f.t, 3*time.Second, fmt.Sprintf("metric events for %q >= %d", service, n), func() bool {
 		var count int
 		err := f.st.ReaderDB().QueryRowContext(f.ctx,
-			"SELECT COUNT(*) FROM metric_series WHERE service_name = ?", service,
+			`SELECT COUNT(*) FROM events WHERE signal_type = 'metric' AND service_name = ?`,
+			service,
 		).Scan(&count)
 		return err == nil && count >= n
 	})
 }
 
-// waitForMetricPoints polls until at least n points exist for the
-// series named `metric` under the given service.
-func (f *e2eFixture) waitForMetricPoints(service, metricName string, n int) {
+// waitForDistinctMetricSeries waits for at least n distinct (name, attributes)
+// tuples — the "series count" analogue under the wide-event model.
+func (f *e2eFixture) waitForDistinctMetricSeries(service string, n int) {
 	f.t.Helper()
-	waitFor(f.t, 3*time.Second, fmt.Sprintf("metric_points for %q/%q >= %d", service, metricName, n), func() bool {
+	waitFor(f.t, 3*time.Second, fmt.Sprintf("distinct metric series for %q >= %d", service, n), func() bool {
 		var count int
-		err := f.st.ReaderDB().QueryRowContext(f.ctx, `
-			SELECT COUNT(*) FROM metric_points p
-			  JOIN metric_series s ON s.series_id = p.series_id
-			WHERE s.service_name = ? AND s.name = ?
-		`, service, metricName).Scan(&count)
+		err := f.st.ReaderDB().QueryRowContext(f.ctx,
+			`SELECT COUNT(*) FROM (
+				SELECT DISTINCT name, attributes
+				FROM events WHERE signal_type = 'metric' AND service_name = ?
+			)`,
+			service,
+		).Scan(&count)
 		return err == nil && count >= n
 	})
 }
@@ -116,29 +109,27 @@ func TestE2E_MetricCounter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("counter: %v", err)
 	}
-	// Two distinct series via the label set — GET vs POST.
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		counter.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("http.method", "GET")))
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		counter.Add(context.Background(), 1,
 			metric.WithAttributes(attribute.String("http.method", "POST")))
 	}
 
 	f.shutdownMeter(mp)
-	f.waitForMetricSeries("counter-svc", 2)
-	f.waitForMetricPoints("counter-svc", "requests.total", 2)
+	f.waitForDistinctMetricSeries("counter-svc", 2)
+	f.waitForMetricEvents("counter-svc", 2)
 
-	// Series-level assertions: kind=sum, monotonic=1, temporality=cumulative.
+	// meta.* stamping is present: metric_kind=sum, temporality=cumulative, monotonic=1.
 	rows, err := f.st.ReaderDB().QueryContext(f.ctx, `
-		SELECT kind, temporality, monotonic, attributes
-		  FROM metric_series
-		 WHERE service_name = ? AND name = ?
-		 ORDER BY attributes
+		SELECT DISTINCT metric_kind, metric_temporality, metric_monotonic, attributes
+		  FROM events
+		 WHERE signal_type = 'metric' AND service_name = ? AND name = ?
 	`, "counter-svc", "requests.total")
 	if err != nil {
-		t.Fatalf("series query: %v", err)
+		t.Fatalf("events query: %v", err)
 	}
 	defer rows.Close()
 	var seen int
@@ -149,27 +140,26 @@ func TestE2E_MetricCounter(t *testing.T) {
 			t.Fatal(err)
 		}
 		if kind != "sum" {
-			t.Errorf("kind: want sum, got %q", kind)
+			t.Errorf("metric_kind: want sum, got %q", kind)
 		}
 		if temp != "cumulative" {
-			t.Errorf("temporality: want cumulative, got %q", temp)
+			t.Errorf("metric_temporality: want cumulative, got %q", temp)
 		}
 		if mono != 1 {
-			t.Errorf("monotonic: want 1, got %d", mono)
+			t.Errorf("metric_monotonic: want 1, got %d", mono)
 		}
 		seen++
 	}
 	if seen != 2 {
-		t.Errorf("series count: want 2, got %d", seen)
+		t.Errorf("distinct (kind,temp,mono,attrs) count: want 2, got %d", seen)
 	}
 
-	// Each series' last-seen cumulative value matches what we added.
+	// Each (method) series' last-seen cumulative value matches.
 	perMethod := map[string]float64{}
 	pointRows, err := f.st.ReaderDB().QueryContext(f.ctx, `
-		SELECT s.attributes, p.value
-		  FROM metric_points p
-		  JOIN metric_series s ON s.series_id = p.series_id
-		 WHERE s.service_name = ? AND s.name = ?
+		SELECT attributes, value
+		  FROM events
+		 WHERE signal_type = 'metric' AND service_name = ? AND name = ?
 	`, "counter-svc", "requests.total")
 	if err != nil {
 		t.Fatalf("point query: %v", err)
@@ -213,8 +203,6 @@ func TestE2E_MetricGauge(t *testing.T) {
 	mp := f.meterProvider("gauge-svc")
 	meter := mp.Meter("e2e")
 
-	// Observed async gauge — the callback returns the current value on
-	// each collection cycle. Simulates memory.used_bytes.
 	called := 0
 	gauge, err := meter.Float64ObservableGauge("memory.used",
 		metric.WithUnit("By"),
@@ -230,43 +218,38 @@ func TestE2E_MetricGauge(t *testing.T) {
 	}
 	_ = gauge
 
-	// Wait for at least one collection cycle. 50ms reader interval; 200ms
-	// gives some slack for CI.
 	time.Sleep(250 * time.Millisecond)
 	f.shutdownMeter(mp)
-	f.waitForMetricSeries("gauge-svc", 1)
-	f.waitForMetricPoints("gauge-svc", "memory.used", 1)
+	f.waitForMetricEvents("gauge-svc", 1)
 
-	// Kind=gauge, monotonic=NULL, temporality empty (gauge has no
-	// temporality in OTLP's model; the transformer writes it as NULL).
+	// metric_kind=gauge; monotonic NULL; temporality NULL (gauge has no
+	// temporality, so buildAttrs didn't stamp the key).
 	var kind string
 	var temp sql.NullString
 	var mono sql.NullInt64
 	if err := f.st.ReaderDB().QueryRowContext(f.ctx, `
-		SELECT kind, temporality, monotonic
-		  FROM metric_series
-		 WHERE service_name = ? AND name = ?
+		SELECT metric_kind, metric_temporality, metric_monotonic
+		  FROM events
+		 WHERE signal_type = 'metric' AND service_name = ? AND name = ?
+		 ORDER BY time_ns DESC LIMIT 1
 	`, "gauge-svc", "memory.used").Scan(&kind, &temp, &mono); err != nil {
-		t.Fatalf("series row: %v", err)
+		t.Fatalf("event row: %v", err)
 	}
 	if kind != "gauge" {
-		t.Errorf("kind: want gauge, got %q", kind)
+		t.Errorf("metric_kind: want gauge, got %q", kind)
 	}
 	if temp.Valid && temp.String != "" {
-		t.Errorf("temporality for gauge: want NULL/empty, got %q", temp.String)
+		t.Errorf("metric_temporality for gauge: want NULL/empty, got %q", temp.String)
 	}
 	if mono.Valid {
-		t.Errorf("monotonic for gauge: want NULL, got %d", mono.Int64)
+		t.Errorf("metric_monotonic for gauge: want NULL, got %d", mono.Int64)
 	}
 
-	// Value should match the callback output (roughly — reader cycles
-	// are non-deterministic; just ensure it's in the expected band).
 	var value float64
 	if err := f.st.ReaderDB().QueryRowContext(f.ctx, `
-		SELECT p.value FROM metric_points p
-		  JOIN metric_series s ON s.series_id = p.series_id
-		 WHERE s.service_name = ? AND s.name = ?
-		 ORDER BY p.time_ns DESC LIMIT 1
+		SELECT value FROM events
+		 WHERE signal_type = 'metric' AND service_name = ? AND name = ?
+		 ORDER BY time_ns DESC LIMIT 1
 	`, "gauge-svc", "memory.used").Scan(&value); err != nil {
 		t.Fatalf("latest value: %v", err)
 	}
@@ -276,8 +259,8 @@ func TestE2E_MetricGauge(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Catalog: metric attribute keys land under signal_type=metric so the
-// existing /api/fields machinery lights up when we build the UI.
+// Attribute catalog: metric attribute keys land under signal_type=metric so
+// /api/fields?dataset=metric returns them. meta.* keys must be filtered out.
 // ---------------------------------------------------------------------------
 
 func TestE2E_MetricAttributeCatalog(t *testing.T) {
@@ -296,7 +279,7 @@ func TestE2E_MetricAttributeCatalog(t *testing.T) {
 			attribute.Int("status_code", 200),
 		))
 	f.shutdownMeter(mp)
-	f.waitForMetricPoints("cat-svc", "hits", 1)
+	f.waitForMetricEvents("cat-svc", 1)
 
 	var routeCount, statusCount int
 	if err := f.st.ReaderDB().QueryRowContext(f.ctx,
@@ -315,14 +298,23 @@ func TestE2E_MetricAttributeCatalog(t *testing.T) {
 	if statusCount == 0 {
 		t.Errorf("status_code key missing from metric attribute_keys catalog")
 	}
+
+	// meta.* keys are reserved and must NOT appear in the attribute_keys
+	// catalog — they're system-stamped, not user attributes.
+	var metaKeyCount int
+	if err := f.st.ReaderDB().QueryRowContext(f.ctx,
+		`SELECT COUNT(*) FROM attribute_keys WHERE key LIKE 'meta.%'`).Scan(&metaKeyCount); err != nil {
+		t.Fatal(err)
+	}
+	if metaKeyCount != 0 {
+		t.Errorf("meta.* keys should be excluded from attribute_keys catalog; got %d", metaKeyCount)
+	}
 }
 
-// containsMethod checks whether the JSON-encoded attrs column has
-// `"http.method": "<wanted>"`. Quick substring check is safe because
-// the attribute value has no escapes for these inputs.
+// containsMethod checks whether a JSON attrs column has `"http.method":"<wanted>"`.
 func containsMethod(attrs, wanted string) bool {
-	return fmt.Sprintf(`"http.method":"%s"`, wanted) != "" &&
-		(indexString(attrs, fmt.Sprintf(`"http.method":"%s"`, wanted)) >= 0)
+	needle := fmt.Sprintf(`"http.method":"%s"`, wanted)
+	return indexString(attrs, needle) >= 0
 }
 
 func indexString(s, sub string) int {
@@ -335,92 +327,8 @@ func indexString(s, sub string) int {
 }
 
 // ---------------------------------------------------------------------------
-// /api/metrics + /api/metrics/{name}/series
-// ---------------------------------------------------------------------------
-
-func TestE2E_MetricsAPIListing(t *testing.T) {
-	f := newE2EFixture(t)
-	defer f.close()
-
-	mp := f.meterProvider("picker-svc")
-	meter := mp.Meter("e2e")
-
-	reqs, _ := meter.Int64Counter("requests.total", metric.WithUnit("1"),
-		metric.WithDescription("total HTTP requests"))
-	reqs.Add(context.Background(), 1, metric.WithAttributes(attribute.String("route", "/a")))
-	reqs.Add(context.Background(), 1, metric.WithAttributes(attribute.String("route", "/b")))
-
-	_, err := meter.Float64ObservableGauge("memory.used", metric.WithUnit("By"),
-		metric.WithFloat64Callback(func(_ context.Context, obs metric.Float64Observer) error {
-			obs.Observe(1024)
-			return nil
-		}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(250 * time.Millisecond)
-	f.shutdownMeter(mp)
-	f.waitForMetricSeries("picker-svc", 3) // 2 routes on requests + 1 gauge
-
-	var listing struct {
-		Metrics []struct {
-			Name        string `json:"name"`
-			Kind        string `json:"kind"`
-			Unit        string `json:"unit"`
-			Description string `json:"description"`
-			SeriesCount int64  `json:"series_count"`
-		} `json:"metrics"`
-	}
-	if err := f.getJSON("/api/metrics?service=picker-svc", &listing); err != nil {
-		t.Fatalf("GET /api/metrics: %v", err)
-	}
-	byName := map[string]struct {
-		Kind        string
-		Unit        string
-		Count       int64
-	}{}
-	for _, m := range listing.Metrics {
-		byName[m.Name] = struct {
-			Kind  string
-			Unit  string
-			Count int64
-		}{m.Kind, m.Unit, m.SeriesCount}
-	}
-	if e := byName["requests.total"]; e.Kind != "sum" || e.Count != 2 {
-		t.Errorf("requests.total: want sum / series_count=2, got %+v", e)
-	}
-	if e := byName["memory.used"]; e.Kind != "gauge" || e.Unit != "By" {
-		t.Errorf("memory.used: want gauge unit=By, got %+v", e)
-	}
-
-	// /api/metrics/{name}/series
-	var series struct {
-		Series []struct {
-			SeriesID    int64  `json:"series_id"`
-			ServiceName string `json:"service_name"`
-			Kind        string `json:"kind"`
-			Attributes  string `json:"attributes"`
-		} `json:"series"`
-	}
-	if err := f.getJSON("/api/metrics/requests.total/series?service=picker-svc", &series); err != nil {
-		t.Fatalf("series endpoint: %v", err)
-	}
-	if len(series.Series) != 2 {
-		t.Fatalf("want 2 series, got %d (%+v)", len(series.Series), series.Series)
-	}
-	for _, s := range series.Series {
-		if s.Kind != "sum" {
-			t.Errorf("series kind: want sum, got %q", s.Kind)
-		}
-		if s.ServiceName != "picker-svc" {
-			t.Errorf("service_name: want picker-svc, got %q", s.ServiceName)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// /api/query with dataset=metrics — the shared query path works
-// against the metric_points + metric_series join.
+// /api/query with dataset=metrics — the shared query path works against
+// events with the signal_type='metric' preset filter.
 // ---------------------------------------------------------------------------
 
 func TestE2E_MetricsQuery(t *testing.T) {
@@ -432,23 +340,22 @@ func TestE2E_MetricsQuery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		counter.Add(context.Background(), 1, metric.WithAttributes(attribute.String("k", "a")))
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		counter.Add(context.Background(), 1, metric.WithAttributes(attribute.String("k", "b")))
 	}
 	f.shutdownMeter(mp)
-	f.waitForMetricSeries("q-svc", 2)
-	f.waitForMetricPoints("q-svc", "events", 2)
+	f.waitForDistinctMetricSeries("q-svc", 2)
+	f.waitForMetricEvents("q-svc", 2)
 
 	now := time.Now()
 	from := now.Add(-5 * time.Minute)
 
 	// Aggregated MAX(value) group-by k — cumulative sum instruments
 	// report their total-to-date, so MAX over a window reflects the
-	// last-seen cumulative level per series. Should equal the total
-	// we added.
+	// last-seen cumulative level per series.
 	res, err := f.runQueryAPI(map[string]any{
 		"dataset":    "metrics",
 		"time_range": map[string]any{"from": rfc3339(from), "to": rfc3339(now.Add(5 * time.Second))},
@@ -478,7 +385,7 @@ func TestE2E_MetricsQuery(t *testing.T) {
 	}
 
 	// Raw-rows mode (empty SELECT) — each point comes back with
-	// service_name, name, kind, value, and the series attributes blob.
+	// service_name, name, kind, value, and the event attributes.
 	rawRes, err := f.runQueryAPI(map[string]any{
 		"dataset":    "metrics",
 		"time_range": map[string]any{"from": rfc3339(from), "to": rfc3339(now.Add(5 * time.Second))},
@@ -492,7 +399,6 @@ func TestE2E_MetricsQuery(t *testing.T) {
 	if len(rawRes.Rows) == 0 {
 		t.Fatal("raw metrics query returned no rows")
 	}
-	// Expect the five shape columns documented in rawColumnsFor.
 	for _, c := range []string{"time_ns", "service_name", "name", "kind", "value", "attributes"} {
 		if rawRes.columnIdx(c) < 0 {
 			t.Errorf("raw metric columns missing %q (got %+v)", c, rawRes.Columns)
