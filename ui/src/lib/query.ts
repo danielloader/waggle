@@ -480,6 +480,12 @@ export function buildCountQuery(
  * Un-bucketed version of the chart query. Returns one row per GROUP BY
  * tuple (or a single row when no GROUP BY) — the shape the Overview tab
  * renders. Cheap in SQLite even on large datasets.
+ *
+ * Rate aggregations (rate_sum / rate_avg / rate_max) require bucket_ms
+ * to be meaningful, so in the un-bucketed Overview view we fall back to
+ * the underlying aggregation — rate_sum → sum, rate_avg → avg, etc.
+ * That way a chart built around "RATE_SUM(bytes)" still produces a
+ * sensible "SUM(bytes) over the window" number on the Overview tab.
  */
 export function buildOverviewQuery(
   dataset: Dataset,
@@ -487,19 +493,33 @@ export function buildOverviewQuery(
   now = new Date(),
 ): Query {
   const resolved = resolveSearchRange(search, now);
+  const rewritten = selectOrDefault(search.select, dataset).map(downgradeRateOp);
   return {
     dataset,
     time_range: {
       from: new Date(resolved.fromMs).toISOString(),
       to: new Date(resolved.toMs).toISOString(),
     },
-    select: selectOrDefault(search.select, dataset),
+    select: rewritten,
     where: search.where,
     group_by: search.group_by,
     order_by: search.order_by,
     having: search.having,
     limit: search.limit ?? 1000,
   };
+}
+
+function downgradeRateOp(a: Aggregation): Aggregation {
+  switch (a.op) {
+    case "rate_sum":
+      return { ...a, op: "sum" };
+    case "rate_avg":
+      return { ...a, op: "avg" };
+    case "rate_max":
+      return { ...a, op: "max" };
+    default:
+      return a;
+  }
 }
 
 /** Short human summary of the SELECT list for the Define panel. */

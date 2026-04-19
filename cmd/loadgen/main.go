@@ -42,10 +42,11 @@ func main() {
 	var (
 		endpoint       = flag.String("endpoint", "127.0.0.1:4318", "OTLP/HTTP host:port to send to")
 		insecure       = flag.Bool("insecure", true, "Use http:// instead of https://")
-		rate           = flag.Float64("rate", 5.0, "Target traces emitted per second")
-		logsRate       = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
-		metricsEnable  = flag.Bool("metrics", true, "Emit demo metrics (requests.total counter + memory.used gauge per service)")
-		metricsRate    = flag.Float64("metrics-rate", 20, "Counter bumps per second across all services (only used when --metrics=true)")
+		rate            = flag.Float64("rate", 5.0, "Target traces emitted per second (0 disables)")
+		logsRate        = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
+		metricsEnable   = flag.Bool("metrics", true, "Emit demo metrics (requests.total counter + host-like gauges per service)")
+		metricsRate     = flag.Float64("metrics-rate", 20, "Counter bumps per second across all services (0 keeps gauges only)")
+		metricsInterval = flag.Duration("metrics-interval", time.Second, "Metric export cadence (the OTel PeriodicReader interval)")
 		jitter         = flag.Float64("jitter", 0.3, "Fraction of the inter-trace period to randomize [0.0–1.0]")
 		duration       = flag.Duration("duration", 0, "How long to run (0 = until Ctrl-C)")
 		servicesFlag   = flag.String("services", "", "Comma-separated service names to emit (default: all templates)")
@@ -63,11 +64,17 @@ func main() {
 		return
 	}
 
-	if *rate <= 0 {
-		log.Fatalf("--rate must be > 0")
+	if *rate < 0 {
+		log.Fatalf("--rate must be >= 0")
 	}
 	if *logsRate < 0 {
 		log.Fatalf("--logs-rate must be >= 0")
+	}
+	if *metricsInterval <= 0 {
+		log.Fatalf("--metrics-interval must be > 0")
+	}
+	if *rate == 0 && *logsRate == 0 && !*metricsEnable {
+		log.Fatalf("nothing to do: --rate, --logs-rate and --metrics all disabled")
 	}
 	if *jitter < 0 || *jitter > 1 {
 		log.Fatalf("--jitter must be in [0.0, 1.0]")
@@ -125,7 +132,7 @@ func main() {
 		requestCounters map[string]otelmetric.Int64Counter
 	)
 	if *metricsEnable {
-		metricProviders, err = buildMetricProvidersForServices(templates, *endpoint, *insecure)
+		metricProviders, err = buildMetricProvidersForServices(templates, *endpoint, *insecure, *metricsInterval)
 		if err != nil {
 			log.Fatalf("build metric providers: %v", err)
 		}
@@ -147,9 +154,12 @@ func main() {
 		defer cancel()
 	}
 
-	period := time.Duration(float64(time.Second) / *rate)
-	log.Printf("loadgen: endpoint=%s rate=%.2f/s logs_rate=%.2f/s period=%s jitter=%.0f%% parallelism=%d trace_templates=%d log_templates=%d",
-		*endpoint, *rate, *logsRate, period, *jitter*100, *parallelism, len(templates), len(logTemplates))
+	var period time.Duration
+	if *rate > 0 {
+		period = time.Duration(float64(time.Second) / *rate)
+	}
+	log.Printf("loadgen: endpoint=%s rate=%.2f/s logs_rate=%.2f/s metrics=%v metrics_interval=%s parallelism=%d trace_templates=%d log_templates=%d",
+		*endpoint, *rate, *logsRate, *metricsEnable, *metricsInterval, *parallelism, len(templates), len(logTemplates))
 
 	emitted := &atomic.Int64{}
 	failed := &atomic.Int64{}
@@ -172,42 +182,44 @@ func main() {
 		loggers[svc] = p.Logger("loadgen")
 	}
 
-	tokens := make(chan struct{}, *parallelism)
 	var wg sync.WaitGroup
-	for range *parallelism {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for range tokens {
-				tpl := templates[rand.IntN(len(templates))]
-				if err := tpl.Emit(ctx, tracers, loggers); err != nil {
-					failed.Add(1)
-					continue
+	if *rate > 0 {
+		tokens := make(chan struct{}, *parallelism)
+		for range *parallelism {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for range tokens {
+					tpl := templates[rand.IntN(len(templates))]
+					if err := tpl.Emit(ctx, tracers, loggers); err != nil {
+						failed.Add(1)
+						continue
+					}
+					emitted.Add(1)
 				}
-				emitted.Add(1)
+			}()
+		}
+
+		go func() {
+			defer close(tokens)
+			for {
+				sleep := jitterDuration(period, *jitter)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(sleep):
+				}
+				select {
+				case tokens <- struct{}{}:
+				case <-ctx.Done():
+					return
+				default:
+					// Workers saturated; drop the tick to back off, matching what
+					// a real producer does under downstream pressure.
+				}
 			}
 		}()
 	}
-
-	go func() {
-		defer close(tokens)
-		for {
-			sleep := jitterDuration(period, *jitter)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(sleep):
-			}
-			select {
-			case tokens <- struct{}{}:
-			case <-ctx.Done():
-				return
-			default:
-				// Workers saturated; drop the tick to back off, matching what
-				// a real producer does under downstream pressure.
-			}
-		}
-	}()
 
 	// Metric counter-bump loop. Gauge values come from a callback on
 	// the observable gauge and don't need our help. Counter bumps
@@ -287,7 +299,7 @@ func jitterDuration(base time.Duration, jitter float64) time.Duration {
 // service in the trace-template set. Uses a PeriodicReader so the
 // exporter pushes on a short fixed interval, matching the cadence of
 // the log + trace exporters.
-func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdkmetric.MeterProvider, error) {
+func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool, interval time.Duration) (map[string]*sdkmetric.MeterProvider, error) {
 	byService := map[string]*sdkmetric.MeterProvider{}
 	services := map[string]struct{}{}
 	for _, t := range tpls {
@@ -314,7 +326,7 @@ func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, inse
 		byService[service] = sdkmetric.NewMeterProvider(
 			sdkmetric.WithResource(res),
 			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp,
-				sdkmetric.WithInterval(time.Second),
+				sdkmetric.WithInterval(interval),
 			)),
 		)
 	}
