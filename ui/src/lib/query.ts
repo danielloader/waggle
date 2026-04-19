@@ -415,17 +415,18 @@ export const querySearchSchema = z.object({
 export type QuerySearch = z.infer<typeof querySearchSchema>;
 
 /**
- * Normalize an empty SELECT to a sensible default. Spans and logs default
- * to COUNT (number of events per bucket). Metrics default to MAX(value) —
- * counts of metric points are meaningless; MAX captures the cumulative
- * level of a counter and the sampled value of a gauge alike.
+ * Normalize an empty SELECT to a sensible default. For every dataset we
+ * fall back to COUNT — it's meaningful on all of them. Metric events are
+ * folded one-row-per-(time, label-set), so COUNT over a window = "how
+ * many label combinations were observed"; a counter-rate or gauge
+ * aggregation requires the user to pick the specific metric name (a
+ * field like requests.total) via the Select cell.
  */
 export function selectOrDefault(
   sel: Aggregation[],
-  dataset?: Dataset,
+  _dataset?: Dataset,
 ): Aggregation[] {
   if (sel.length > 0) return sel;
-  if (dataset === "metrics") return [{ op: "max", field: "value" }];
   return [{ op: "count" }];
 }
 

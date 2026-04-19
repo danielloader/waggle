@@ -201,8 +201,8 @@ function normalizeRow(
     severityNumber: num("severity_number"),
     severityText: str("severity_text"),
     body: str("body"),
-    metricKind: str("metric_kind") ?? str("kind"),
-    value: num("value"),
+    metricKind: undefined,
+    value: undefined,
     traceID: (str("trace_id") ?? "").toLowerCase() || undefined,
     spanID: (str("span_id") ?? "").toLowerCase() || undefined,
     attributes: str("attributes") ?? "{}",
@@ -301,6 +301,27 @@ function NameCell({ row }: { row: NormalizedRow }) {
   if (row.signalType === "log") {
     return <span className="whitespace-pre-wrap">{row.body || row.name || "(no body)"}</span>;
   }
+  if (row.signalType === "metric") {
+    // Metric rows don't have a `name` column — the metrics observed at
+    // this (time, label-set) tuple are attribute keys with numeric
+    // values (e.g. attributes["requests.total"] = 1423). Show the first
+    // few.
+    const mets = metricsFromAttrs(row.attributes);
+    if (mets.length === 0) return <span style={{ color: "var(--color-ink-muted)" }}>(no metrics)</span>;
+    return (
+      <span className="font-mono">
+        {mets.slice(0, 3).map((m, i) => (
+          <span key={m.name}>
+            {i > 0 && <span style={{ color: "var(--color-ink-muted)" }}>, </span>}
+            {m.name}
+          </span>
+        ))}
+        {mets.length > 3 && (
+          <span style={{ color: "var(--color-ink-muted)" }}> +{mets.length - 3}</span>
+        )}
+      </span>
+    );
+  }
   return <span>{row.name}</span>;
 }
 
@@ -327,16 +348,39 @@ function DetailCell({ row }: { row: NormalizedRow }) {
     );
   }
   if (row.signalType === "metric") {
-    const parts: string[] = [];
-    if (row.metricKind) parts.push(row.metricKind);
-    if (row.value !== undefined) parts.push(formatMetricValue(row.value));
+    const mets = metricsFromAttrs(row.attributes);
+    if (mets.length === 0) return <span style={{ color: "var(--color-ink-muted)" }}>·</span>;
+    // Show the first metric's value — the rest are visible when the row
+    // is expanded via the AttributesPanel.
     return (
       <span className="tabular-nums" style={{ color: "var(--color-ink-muted)" }}>
-        {parts.join(" · ")}
+        {formatMetricValue(mets[0].value)}
       </span>
     );
   }
   return <span style={{ color: "var(--color-ink-muted)" }}>·</span>;
+}
+
+// metricsFromAttrs extracts the numeric attribute keys from a metric
+// event's attributes JSON. Under the folded model the metric's name IS
+// the key and its value is a number; label attributes are typically
+// strings. Non-numeric keys (labels, meta.*) are filtered out.
+function metricsFromAttrs(json: string): { name: string; value: number }[] {
+  if (!json || json === "{}") return [];
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const out: { name: string; value: number }[] = [];
+  for (const [k, v] of Object.entries(parsed)) {
+    if (k.startsWith("meta.")) continue;
+    if (typeof v === "number") out.push({ name: k, value: v });
+  }
+  // Stable ordering: metric names sort alphabetically for a consistent UI.
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 function SignalPill({ signal }: { signal: string }) {

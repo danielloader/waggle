@@ -74,9 +74,11 @@ export function EventsPage() {
     queryFn: ({ signal }) =>
       runQuery(buildCountQuery(search.dataset, search), signal),
     refetchInterval: refreshIntervalMs(search.refresh),
-    // Metrics across "all metrics in the store" is meaningless — gate on
-    // a `name = …` filter before we issue the query.
-    enabled: search.dataset !== "metrics" || pickedMetricName(search) !== "",
+    // For metrics the default COUNT-of-metric-events isn't informative on
+    // its own — the user needs to pick a specific metric field (e.g.
+    // MAX(requests.total)) before the chart means anything. Disable the
+    // fetch until they have.
+    enabled: search.dataset !== "metrics" || hasMetricField(search),
   });
 
   const resolved = resolveSearchRange(search);
@@ -91,8 +93,8 @@ export function EventsPage() {
     });
   };
 
-  const metricsNeedsName =
-    search.dataset === "metrics" && pickedMetricName(search) === "";
+  const metricsNeedsField =
+    search.dataset === "metrics" && !hasMetricField(search);
 
   return (
     <div className="h-full flex flex-col">
@@ -117,13 +119,14 @@ export function EventsPage() {
         onToggle={() => setChartOpen((o) => !o)}
       >
         <div className="p-3" style={{ background: "var(--color-surface)" }}>
-          {metricsNeedsName ? (
+          {metricsNeedsField ? (
             <div
               className="flex items-center justify-center text-sm px-4 text-center"
               style={{ color: "var(--color-ink-muted)", height: 125 }}
             >
-              Add a <code className="mx-1 font-mono">name = …</code> filter
-              above to chart a metric.
+              Add a metric field to Select — e.g.{" "}
+              <code className="mx-1 font-mono">MAX(requests.total)</code>{" "}
+              or <code className="mx-1 font-mono">P99(memory.used)</code>.
             </div>
           ) : (
             <QueryChart
@@ -150,9 +153,12 @@ export function EventsPage() {
   );
 }
 
-function pickedMetricName(search: QuerySearch): string {
-  const f = search.where.find((f) => f.field === "name" && f.op === "=");
-  return typeof f?.value === "string" ? f.value : "";
+// hasMetricField reports whether the user's SELECT references a metric
+// field. Under the folded metric_events model a metric's name is just
+// an attribute key (not a row-identifier), so "the user is asking about
+// a metric" = "the user put a field-bound aggregation in Select".
+function hasMetricField(search: QuerySearch): boolean {
+  return search.select.some((a) => a.field !== undefined && a.field !== "");
 }
 
 function querySummary(search: QuerySearch): string {
