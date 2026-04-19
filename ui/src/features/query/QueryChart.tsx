@@ -174,7 +174,12 @@ export function QueryChart({
           >
             <CartesianGrid stroke="var(--color-border)" vertical={false} />
             {xAxis}
-            <YAxis stroke="var(--color-ink-muted)" fontSize={11} width={40} />
+            <YAxis
+              stroke="var(--color-ink-muted)"
+              fontSize={11}
+              width={48}
+              tickFormatter={formatSI}
+            />
             {tooltip}
             <Area
               type="monotone"
@@ -204,7 +209,12 @@ export function QueryChart({
         >
           <CartesianGrid stroke="var(--color-border)" vertical={false} />
           {xAxis}
-          <YAxis stroke="var(--color-ink-muted)" fontSize={11} width={40} />
+          <YAxis
+            stroke="var(--color-ink-muted)"
+            fontSize={11}
+            width={48}
+            tickFormatter={formatSI}
+          />
           {tooltip}
           {series.map((s) => (
             <Line
@@ -279,8 +289,11 @@ function ChartTooltip({ active, payload, label, bucketMs }: ChartTooltipContentP
                     {p.name ?? String(p.dataKey)}
                   </span>
                 </td>
-                <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                  {v.toLocaleString()}
+                <td
+                  style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}
+                  title={v.toLocaleString()}
+                >
+                  {formatSI(v)}
                 </td>
                 <td
                   style={{
@@ -288,8 +301,9 @@ function ChartTooltip({ active, payload, label, bucketMs }: ChartTooltipContentP
                     fontVariantNumeric: "tabular-nums",
                     color: "var(--color-ink-muted)",
                   }}
+                  title={(v / bucketSec).toString()}
                 >
-                  {(v / bucketSec).toFixed(2)}
+                  {formatSI(v / bucketSec)}
                 </td>
               </tr>
             );
@@ -359,6 +373,38 @@ function humanBucket(ms: number): string {
   if (ms >= 60_000) return `${Math.round(ms / 60_000)}m bucket`;
   if (ms >= 1000) return `${Math.round(ms / 1000)}s bucket`;
   return `${ms}ms bucket`;
+}
+
+// formatSI trims large/small numbers to SI-suffixed strings so y-axis
+// ticks don't blow through their column width. Handles:
+//   1_200_000        → "1.2M"
+//   2_456_789_012    → "2.46G"
+//   0.0034           → "3.4m"
+//   1234             → "1.23K"
+//   0                → "0"
+// Bytes aren't distinguished from counts — we use decimal (K=1000) because
+// waggle queries mix units; the tooltip shows the exact value when precision
+// matters.
+function formatSI(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  if (value === 0) return "0";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1e12) return sign + trimTrailingZeros((abs / 1e12).toFixed(2)) + "T";
+  if (abs >= 1e9) return sign + trimTrailingZeros((abs / 1e9).toFixed(2)) + "G";
+  if (abs >= 1e6) return sign + trimTrailingZeros((abs / 1e6).toFixed(2)) + "M";
+  if (abs >= 1e3) return sign + trimTrailingZeros((abs / 1e3).toFixed(2)) + "K";
+  if (abs >= 1) return sign + trimTrailingZeros(abs.toFixed(2));
+  if (abs >= 1e-3) return sign + trimTrailingZeros((abs * 1e3).toFixed(2)) + "m";
+  if (abs >= 1e-6) return sign + trimTrailingZeros((abs * 1e6).toFixed(2)) + "µ";
+  if (abs >= 1e-9) return sign + trimTrailingZeros((abs * 1e9).toFixed(2)) + "n";
+  return sign + abs.toExponential(2);
+}
+
+function trimTrailingZeros(s: string): string {
+  // Turn "1.20" → "1.2", "1.00" → "1", leave "1.23" alone.
+  if (!s.includes(".")) return s;
+  return s.replace(/\.?0+$/, "");
 }
 
 // ---------------------------------------------------------------------------

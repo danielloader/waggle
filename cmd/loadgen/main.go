@@ -321,47 +321,137 @@ func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, inse
 	return byService, nil
 }
 
-// registerDemoMetrics creates the default set of instruments on every
-// service-scoped MeterProvider and returns the counter handles so the
-// main loop can bump them. Each provider gets:
-//   - requests.total (Int64Counter) — cumulative counter, bumped by the
-//     main loop with a rotating http.method attribute.
-//   - memory.used_bytes (Float64ObservableGauge) — callback-driven gauge
-//     that wobbles around a per-service baseline so the chart has a
-//     non-flat line out of the box.
+// registerDemoMetrics creates a realistic default set of instruments on
+// every service-scoped MeterProvider. The metric palette mirrors what a
+// typical host / process emits through the OTel host-metrics receiver:
+// cpu.utilization, memory usage split by state, network bytes in/out —
+// plus an application-level requests.total counter.
+//
+// Every async gauge wobbles around a per-service baseline so the chart
+// has a non-flat line from the first export cycle. Counters bump from
+// the main loop.
+//
+// Returns the request counter handles keyed by service; the caller bumps
+// them on every simulated request. The gauges + network counters are
+// self-driven via callbacks and don't need a handle.
 func registerDemoMetrics(providers map[string]*sdkmetric.MeterProvider) map[string]otelmetric.Int64Counter {
 	counters := map[string]otelmetric.Int64Counter{}
 	for svc, mp := range providers {
 		meter := mp.Meter("loadgen")
+		seed := fnv32(svc)
+
 		counter, err := meter.Int64Counter("requests.total",
 			otelmetric.WithUnit("1"),
 			otelmetric.WithDescription("cumulative HTTP requests handled"),
 		)
 		if err != nil {
-			log.Printf("counter for %s: %v", svc, err)
+			log.Printf("requests.total for %s: %v", svc, err)
 			continue
 		}
 		counters[svc] = counter
 
-		// The gauge baseline is hashed from the service name so
-		// different services sit at visibly different levels. Wobble
-		// is ±10% via rand.Float64().
-		baseline := 50_000_000.0 + float64(fnv32(svc)%200_000_000)
-		_, err = meter.Float64ObservableGauge("memory.used_bytes",
+		// --- Host-like memory metrics ---------------------------------
+		// Baselines roughly resemble a 1–4 GB container; deterministic per
+		// service so two runs of the same topology look the same.
+		totalMem := 1_000_000_000.0 + float64(seed%3_000_000_000) // 1–4 GB
+		baselineUsed := totalMem * (0.35 + float64(seed%40)/100.0)
+		baselineRSS := baselineUsed * 0.7
+
+		register(svc, meter.Float64ObservableGauge, "memory.used_bytes",
 			otelmetric.WithUnit("By"),
-			otelmetric.WithDescription("process resident memory in bytes"),
+			otelmetric.WithDescription("process memory used"),
+			otelmetric.WithFloat64Callback(observeWobble(baselineUsed, 0.10,
+				attribute.String("state", "used"))),
+		)
+		register(svc, meter.Float64ObservableGauge, "memory.free_bytes",
+			otelmetric.WithUnit("By"),
+			otelmetric.WithDescription("process memory free"),
+			otelmetric.WithFloat64Callback(observeWobble(totalMem-baselineUsed, 0.10,
+				attribute.String("state", "free"))),
+		)
+		register(svc, meter.Float64ObservableGauge, "memory.rss_bytes",
+			otelmetric.WithUnit("By"),
+			otelmetric.WithDescription("resident set size"),
+			otelmetric.WithFloat64Callback(observeWobble(baselineRSS, 0.08,
+				attribute.String("process", "main"))),
+		)
+
+		// --- CPU utilisation -----------------------------------------
+		// Fraction 0..1, wobbles around a per-service baseline. Two cores
+		// reported so GROUP BY cpu is meaningful.
+		cpuBase := 0.15 + float64(seed%40)/100.0
+		register(svc, meter.Float64ObservableGauge, "cpu.utilization",
+			otelmetric.WithUnit("1"),
+			otelmetric.WithDescription("cpu utilization as a fraction in [0, 1]"),
 			otelmetric.WithFloat64Callback(func(_ context.Context, obs otelmetric.Float64Observer) error {
-				wobble := 1 + (rand.Float64()-0.5)*0.2
-				obs.Observe(baseline*wobble,
-					otelmetric.WithAttributes(attribute.String("process", "main")))
+				for _, cpu := range []string{"cpu0", "cpu1"} {
+					jitter := 1 + (rand.Float64()-0.5)*0.3
+					obs.Observe(cpuBase*jitter,
+						otelmetric.WithAttributes(attribute.String("cpu", cpu)))
+				}
+				return nil
+			}),
+		)
+
+		// --- Network bytes --------------------------------------------
+		// Monotonic Int64Counters driven by a callback so we don't need a
+		// main-loop wiring. The callback increments a local integer each
+		// collection cycle and re-observes the running total.
+		var netSent, netRecv int64
+		_, err = meter.Int64ObservableCounter("network.bytes_sent",
+			otelmetric.WithUnit("By"),
+			otelmetric.WithDescription("bytes sent over the network"),
+			otelmetric.WithInt64Callback(func(_ context.Context, obs otelmetric.Int64Observer) error {
+				netSent += int64(50_000 + rand.IntN(200_000))
+				obs.Observe(netSent, otelmetric.WithAttributes(
+					attribute.String("direction", "transmit"),
+					attribute.String("device", "eth0"),
+				))
 				return nil
 			}),
 		)
 		if err != nil {
-			log.Printf("gauge for %s: %v", svc, err)
+			log.Printf("network.bytes_sent for %s: %v", svc, err)
+		}
+		_, err = meter.Int64ObservableCounter("network.bytes_received",
+			otelmetric.WithUnit("By"),
+			otelmetric.WithDescription("bytes received over the network"),
+			otelmetric.WithInt64Callback(func(_ context.Context, obs otelmetric.Int64Observer) error {
+				netRecv += int64(80_000 + rand.IntN(300_000))
+				obs.Observe(netRecv, otelmetric.WithAttributes(
+					attribute.String("direction", "receive"),
+					attribute.String("device", "eth0"),
+				))
+				return nil
+			}),
+		)
+		if err != nil {
+			log.Printf("network.bytes_received for %s: %v", svc, err)
 		}
 	}
 	return counters
+}
+
+// register is a small generic wrapper around MeterProvider.Float64ObservableGauge
+// that logs and swallows errors so registration partial-failure doesn't kill
+// loadgen. It captures the service name for the error message.
+type observableGaugeFn = func(string, ...otelmetric.Float64ObservableGaugeOption) (otelmetric.Float64ObservableGauge, error)
+
+func register(svc string, fn observableGaugeFn, name string, opts ...otelmetric.Float64ObservableGaugeOption) {
+	if _, err := fn(name, opts...); err != nil {
+		log.Printf("%s for %s: %v", name, svc, err)
+	}
+}
+
+// observeWobble returns a Float64Callback that reports `baseline` jittered by
+// ±amplitude (fraction of baseline) with the given attributes. Used for gauge
+// metrics where we want visible movement on a chart.
+func observeWobble(baseline, amplitude float64, attrs ...attribute.KeyValue) otelmetric.Float64Callback {
+	return func(_ context.Context, obs otelmetric.Float64Observer) error {
+		wobble := 1 + (rand.Float64()-0.5)*2*amplitude
+		obs.Observe(baseline*wobble, otelmetric.WithAttributes(attrs...))
+		return nil
+	}
 }
 
 // fnv32 is a tiny deterministic hash used to spread the gauge baseline
