@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { Settings2 } from "lucide-react";
 import { Accordion } from "../components/ui/Accordion";
+import { Popover } from "../components/ui/Popover";
 import { DefinePanel } from "../features/query/DefinePanel";
-import { aggregationIndices, QueryChart } from "../features/query/QueryChart";
+import {
+  aggregationIndices,
+  QueryChart,
+  type AxisScale,
+  type MissingValuesMode,
+} from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
 import {
   bucketMsFor,
@@ -167,6 +174,13 @@ function hasMetricField(search: QuerySearch): boolean {
 // wildly incompatible scales; splitting into stacked charts gives each
 // aggregation its own y-axis and its own labelled header. All charts share
 // the time window / bucket size so they stay aligned.
+interface ChartSettings {
+  missingValues: MissingValuesMode;
+  scale: AxisScale;
+}
+
+const DEFAULT_CHART_SETTINGS: ChartSettings = { missingValues: "auto", scale: "linear" };
+
 function ChartStack({
   result,
   loading,
@@ -185,44 +199,182 @@ function ChartStack({
   onBucketClick?: (tMs: number) => void;
 }) {
   const aggs = aggregationIndices(result);
+  // Per-chart settings keyed by the aggregation alias (stable across
+  // ephemeral re-renders; resets when the user changes the query). Not
+  // currently persisted to URL — deliberate for now, the Edit Chart
+  // controls are exploratory rather than something users need to share.
+  const [settingsByLabel, setSettingsByLabel] = useState<
+    Record<string, ChartSettings>
+  >({});
+
+  const updateSetting = (label: string, patch: Partial<ChartSettings>) =>
+    setSettingsByLabel((prev) => ({
+      ...prev,
+      [label]: { ...(prev[label] ?? DEFAULT_CHART_SETTINGS), ...patch },
+    }));
+
   // While the query is in-flight (and we still have no prior result), we
-  // fall back to rendering a single QueryChart so the loading spinner
-  // appears where the chart will land.
-  if (aggs.length <= 1) {
+  // fall back to a single chart so the loading spinner appears where the
+  // chart will land.
+  if (aggs.length === 0) {
+    const settings = settingsByLabel["__default__"] ?? DEFAULT_CHART_SETTINGS;
     return (
-      <QueryChart
-        result={result}
-        loading={loading}
-        error={error}
-        bucketMs={bucketMs}
-        fromMs={fromMs}
-        toMs={toMs}
-        onBucketClick={onBucketClick}
-      />
+      <ChartWithEdit
+        label=""
+        settings={settings}
+        onSettingsChange={(patch) => updateSetting("__default__", patch)}
+      >
+        <QueryChart
+          result={result}
+          loading={loading}
+          error={error}
+          bucketMs={bucketMs}
+          fromMs={fromMs}
+          toMs={toMs}
+          onBucketClick={onBucketClick}
+          missingValues={settings.missingValues}
+          scale={settings.scale}
+        />
+      </ChartWithEdit>
     );
   }
   return (
     <div className="flex flex-col gap-4">
-      {aggs.map((a) => (
-        <div key={a.idx}>
-          <div
-            className="text-[11px] uppercase tracking-wide font-medium pb-1 px-1"
-            style={{ color: "var(--color-ink-muted)" }}
+      {aggs.map((a) => {
+        const settings = settingsByLabel[a.label] ?? DEFAULT_CHART_SETTINGS;
+        return (
+          <ChartWithEdit
+            key={a.idx}
+            label={a.label}
+            settings={settings}
+            onSettingsChange={(patch) => updateSetting(a.label, patch)}
           >
-            {a.label}
-          </div>
-          <QueryChart
-            result={result}
-            loading={loading}
-            error={error}
-            bucketMs={bucketMs}
-            fromMs={fromMs}
-            toMs={toMs}
-            onBucketClick={onBucketClick}
-            aggIdx={a.idx}
-          />
+            <QueryChart
+              result={result}
+              loading={loading}
+              error={error}
+              bucketMs={bucketMs}
+              fromMs={fromMs}
+              toMs={toMs}
+              onBucketClick={onBucketClick}
+              aggIdx={a.idx}
+              missingValues={settings.missingValues}
+              scale={settings.scale}
+            />
+          </ChartWithEdit>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChartWithEdit({
+  label,
+  settings,
+  onSettingsChange,
+  children,
+}: {
+  label: string;
+  settings: ChartSettings;
+  onSettingsChange: (patch: Partial<ChartSettings>) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between pb-1 px-1">
+        <div
+          className="text-[11px] uppercase tracking-wide font-medium"
+          style={{ color: "var(--color-ink-muted)" }}
+        >
+          {label}
         </div>
-      ))}
+        <Popover
+          align="end"
+          trigger={
+            <button
+              type="button"
+              className="p-1 rounded cursor-pointer hover:bg-[var(--color-card-hover)]"
+              title="Edit chart"
+              aria-label="Edit chart"
+            >
+              <Settings2
+                className="w-3.5 h-3.5"
+                style={{ color: "var(--color-ink-muted)" }}
+              />
+            </button>
+          }
+        >
+          <ChartSettingsEditor
+            settings={settings}
+            onChange={onSettingsChange}
+          />
+        </Popover>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ChartSettingsEditor({
+  settings,
+  onChange,
+}: {
+  settings: ChartSettings;
+  onChange: (patch: Partial<ChartSettings>) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 p-1 min-w-[220px]">
+      <fieldset className="flex flex-col gap-1">
+        <legend
+          className="text-[11px] uppercase tracking-wide font-medium pb-1"
+          style={{ color: "var(--color-ink-muted)" }}
+        >
+          Missing values
+        </legend>
+        {(
+          [
+            { v: "auto", label: "Auto (smart default)" },
+            { v: "zero", label: "Fill with zeros" },
+            { v: "omit", label: "Omit missing values" },
+          ] as const
+        ).map((opt) => (
+          <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="radio"
+              name="missing"
+              value={opt.v}
+              checked={settings.missingValues === opt.v}
+              onChange={() => onChange({ missingValues: opt.v })}
+            />
+            {opt.label}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset className="flex flex-col gap-1">
+        <legend
+          className="text-[11px] uppercase tracking-wide font-medium pb-1"
+          style={{ color: "var(--color-ink-muted)" }}
+        >
+          Axis scale
+        </legend>
+        {(
+          [
+            { v: "linear", label: "Linear" },
+            { v: "log", label: "Log" },
+          ] as const
+        ).map((opt) => (
+          <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="radio"
+              name="scale"
+              value={opt.v}
+              checked={settings.scale === opt.v}
+              onChange={() => onChange({ scale: opt.v })}
+            />
+            {opt.label}
+          </label>
+        ))}
+      </fieldset>
     </div>
   );
 }

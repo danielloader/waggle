@@ -28,6 +28,9 @@ interface ChartTooltipContentProps {
 import type { QueryResult } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 
+export type MissingValuesMode = "auto" | "zero" | "omit";
+export type AxisScale = "linear" | "log";
+
 interface Props {
   result: QueryResult | undefined;
   loading?: boolean;
@@ -48,6 +51,14 @@ interface Props {
    * Multi-SELECT queries render one <QueryChart> per aggregation index.
    */
   aggIdx?: number;
+  /**
+   * How to handle buckets that returned no rows. Mirrors Honeycomb's
+   * Edit-Chart "Missing values" setting: "auto" zero-fills counts and
+   * omits everything else; "zero" always zero-fills; "omit" never does.
+   */
+  missingValues?: MissingValuesMode;
+  /** Y-axis scale. Defaults to linear. */
+  scale?: AxisScale;
 }
 
 /** aggregationIndices returns one entry per aggregation column in the
@@ -84,18 +95,28 @@ export function QueryChart({
   toMs,
   onBucketClick,
   aggIdx,
+  missingValues = "auto",
+  scale = "linear",
 }: Props) {
   // Default to the first aggregation when the caller didn't specify one —
   // keeps the single-SELECT case behaving as before.
   const numGroups = result?.group_keys?.length ?? 0;
   const effectiveAggIdx = aggIdx ?? 1 + numGroups;
-  // Zero-fill any missing buckets so the chart doesn't interpolate a
-  // smooth curve across quiet periods. Each "no data" bucket drops to 0
-  // for every series, producing an obvious visual gap between bursts.
+
+  // Resolve "auto" → zero/omit based on aggregation alias. Caller
+  // overrides win, so a single-SELECT count chart can still be shown
+  // with gaps if the user really wants it.
+  const aggLabel = result?.columns[effectiveAggIdx]?.name ?? "";
+  const fillMode: Exclude<MissingValuesMode, "auto"> =
+    missingValues === "auto"
+      ? (isZeroFillAgg(aggLabel) ? "zero" : "omit")
+      : missingValues;
+
   const { data, series } = useMemo(
-    () => buildSeries(result, effectiveAggIdx, { fromMs, toMs, bucketMs }),
-    [result, effectiveAggIdx, fromMs, toMs, bucketMs],
+    () => buildSeries(result, effectiveAggIdx, fillMode, { fromMs, toMs, bucketMs }),
+    [result, effectiveAggIdx, fillMode, fromMs, toMs, bucketMs],
   );
+  const connectNulls = fillMode === "omit";
 
   const durationMs = Math.max(1, toMs - fromMs);
   const majorTicks = useMemo(
@@ -179,6 +200,12 @@ export function QueryChart({
               fontSize={11}
               width={48}
               tickFormatter={formatSI}
+              scale={scale}
+              // Recharts needs explicit finite domain for log scale; auto
+              // includes 0 which is invalid on log. For linear, "auto"
+              // still uses the data range.
+              domain={scale === "log" ? ["auto", "auto"] : undefined}
+              allowDataOverflow={scale === "log"}
             />
             {tooltip}
             <Area
@@ -189,6 +216,7 @@ export function QueryChart({
               fill="var(--color-accent)"
               fillOpacity={0.15}
               isAnimationActive={false}
+              connectNulls={connectNulls}
               activeDot={clickable ? { r: 5, style: { cursor: "pointer" } } : undefined}
             />
           </AreaChart>
@@ -226,6 +254,7 @@ export function QueryChart({
               strokeWidth={1.5}
               name={s.label}
               isAnimationActive={false}
+              connectNulls={connectNulls}
               activeDot={clickable ? { r: 5, style: { cursor: "pointer" } } : undefined}
             />
           ))}
@@ -414,6 +443,7 @@ function trimTrailingZeros(s: string): string {
 function buildSeries(
   result: QueryResult | undefined,
   aggIdx: number,
+  fillMode: "zero" | "omit",
   { fromMs, toMs, bucketMs }: { fromMs: number; toMs: number; bucketMs: number },
 ): {
   data: { t: number; [k: string]: number | null }[];
@@ -454,21 +484,13 @@ function buildSeries(
     byBucket.set(t, bucket);
   }
 
-  // Fill missing buckets across the query's full range. What we fill with
-  // depends on the aggregation:
-  //
-  //   - COUNT / COUNT_* / rate_sum on a counter: "absence" is meaningful
-  //     — no events in this bucket really does mean 0. Zero-fill.
-  //   - MAX / AVG / MIN / P50..P99 / SUM / rate_avg / rate_max on
-  //     arbitrary values: "absence" means we didn't observe anything.
-  //     Filling with 0 makes gauges look like they plunged; the line
-  //     should instead render as a gap. Null-fill.
-  //
-  // Recharts respects nulls in Line/Area data: with the default
-  // connectNulls=false behaviour they render as visible breaks.
-  const aggLabel = result.columns[aggIdx]?.name ?? "";
-  const missingValue: number | null = missingFillValue(aggLabel);
-  if (bucketMs > 0 && toMs > fromMs) {
+  // Missing-bucket handling: "zero" fills empty buckets with 0 across
+  // the query window, so the x-axis extent is preserved and genuine
+  // quiet periods render as a flat baseline. "omit" returns only the
+  // buckets the server produced, leaving Recharts' monotone line to
+  // connect consecutive real points directly (sparse data → sharp
+  // peaks; quiet periods → horizontal interpolant).
+  if (fillMode === "zero" && bucketMs > 0 && toMs > fromMs) {
     const filled: typeof byBucket = new Map();
     const startMs = Math.floor(fromMs / bucketMs) * bucketMs;
     for (let t = startMs; t <= toMs; t += bucketMs) {
@@ -477,7 +499,7 @@ function buildSeries(
         filled.set(t, existing);
       } else {
         const row: { t: number; [k: string]: number | null } = { t };
-        for (const s of seriesOrder) row[s.key] = missingValue;
+        for (const s of seriesOrder) row[s.key] = 0;
         filled.set(t, row);
       }
     }
@@ -491,20 +513,22 @@ function buildSeries(
     return { data, series: seriesOrder };
   }
 
+  // Non-count aggregation: no fill. Data carries only the buckets the
+  // server returned; the line connects through them.
   const data = Array.from(byBucket.values()).sort((a, b) => a.t - b.t);
   return { data, series: seriesOrder };
 }
 
-// missingFillValue returns 0 when absence is semantically 0 (a COUNT over
-// an empty set is 0) and null for everything else (a MAX/AVG/etc. over an
-// empty set is undefined, not 0). Matches the alias-prefix convention the
-// builder uses — count_*, rate_sum_* treat absence as 0; MAX/AVG/P99/SUM
-// treat it as "no observation".
-function missingFillValue(aliasName: string): number | null {
-  if (aliasName === "count") return 0;
-  if (aliasName.startsWith("count_")) return 0;
-  if (aliasName.startsWith("rate_sum_")) return 0;
-  return null;
+// isZeroFillAgg reports whether absence of rows in a bucket should
+// render as 0. Matches the alias-prefix convention the builder uses:
+// count / count_* / rate_sum_* are counts of events, so "no rows =
+// 0 events". Everything else is an aggregation over values, so "no
+// rows = no observation" which we don't want to confuse with zero.
+function isZeroFillAgg(aliasName: string): boolean {
+  if (aliasName === "count") return true;
+  if (aliasName.startsWith("count_")) return true;
+  if (aliasName.startsWith("rate_sum_")) return true;
+  return false;
 }
 
 function sanitizeKey(s: string): string {
