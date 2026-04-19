@@ -3,7 +3,7 @@ package store
 import "time"
 
 // Resource is a deduplicated process/service identity extracted from an OTLP
-// ResourceSpans/ResourceLogs envelope.
+// ResourceSpans/ResourceLogs/ResourceMetrics envelope.
 type Resource struct {
 	ID                uint64
 	ServiceName       string
@@ -26,28 +26,50 @@ type Scope struct {
 	AttributesJSON string
 }
 
-type Span struct {
-	TraceID            []byte
-	SpanID             []byte
-	ParentSpanID       []byte
-	ResourceID         uint64
-	ScopeID            uint64
-	ServiceName        string
-	Name               string
-	Kind               int32
-	StartTimeNS        int64
-	EndTimeNS          int64
-	StatusCode         int32
-	StatusMessage      string
-	TraceState         string
-	Flags              uint32
-	DroppedAttrsCount  uint32
-	DroppedEventsCount uint32
-	DroppedLinksCount  uint32
-	AttributesJSON     string
+// SignalType values stamped into meta.signal_type.
+const (
+	SignalSpan   = "span"
+	SignalLog    = "log"
+	SignalMetric = "metric"
+)
 
-	Events []SpanEvent
-	Links  []SpanLink
+// Event is the single wide row that holds every telemetry signal. A span, a
+// log record, or a metric datapoint all become one Event — the signal type is
+// carried in meta.signal_type inside AttributesJSON and surfaced as a virtual
+// column. Nullable scalar fields carry signal-specific data.
+type Event struct {
+	TimeNS         int64
+	EndTimeNS      *int64 // spans only
+	ResourceID     uint64
+	ScopeID        uint64
+	ServiceName    string
+	Name           string
+
+	TraceID      []byte
+	SpanID       []byte
+	ParentSpanID []byte
+
+	// Span-only scalars (nil when not a span)
+	StatusCode    *int32
+	StatusMessage string
+	TraceState    string
+	Flags         *uint32
+
+	// Log-only scalars
+	SeverityNumber *int32
+	SeverityText   string
+	Body           string
+	ObservedTimeNS *int64
+
+	// Metric-only scalar (scalar kinds only — histograms not supported yet)
+	Value *float64
+
+	AttributesJSON string
+
+	// Span events + links ride alongside when this event is a span. Writer
+	// inserts them into span_events / span_links after the parent Event.
+	SpanEvents []SpanEvent
+	SpanLinks  []SpanLink
 }
 
 type SpanEvent struct {
@@ -72,27 +94,10 @@ type SpanLink struct {
 	DroppedAttrsCount uint32
 }
 
-type LogRecord struct {
-	ResourceID        uint64
-	ScopeID           uint64
-	ServiceName       string
-	TimeNS            int64
-	ObservedTimeNS    int64
-	SeverityNumber    int32
-	SeverityText      string
-	Body              string
-	BodyJSON          string
-	TraceID           []byte
-	SpanID            []byte
-	Flags             uint32
-	DroppedAttrsCount uint32
-	AttributesJSON    string
-}
-
 // AttrKeyDelta captures a single per-batch observation of an attribute key.
 // The writer aggregates these into multi-row UPSERTs on attribute_keys.
 type AttrKeyDelta struct {
-	SignalType  string // 'span' | 'log' | 'resource' | 'scope' | 'event' | 'link'
+	SignalType  string // 'span' | 'log' | 'metric' | 'resource' | 'scope' | 'event' | 'link'
 	ServiceName string // "" for cross-service keys
 	Key         string
 	ValueType   string // 'str' | 'int' | 'flt' | 'bool' | 'arr' | 'kv' | 'bytes'
@@ -111,63 +116,19 @@ type AttrValueDelta struct {
 	LastSeenNS  int64
 }
 
-// MetricSeries identifies one unique (resource, scope, name, attrs)
-// timeseries. Points accumulated under one series share these facets so
-// the catalog stays small compared to the point count.
-type MetricSeries struct {
-	// SeriesID is zero when the writer is upserting; the store fills it
-	// in and reuses the same row across batches via the UNIQUE key.
-	ResourceID   uint64
-	ScopeID      uint64
-	ServiceName  string
-	Name         string
-	Description  string
-	Unit         string
-	// Kind: "sum" | "gauge" | "histogram" | "exp_histogram" | "summary".
-	Kind           string
-	// Temporality: "cumulative" | "delta" (blank for gauge + summary).
-	Temporality    string
-	// Monotonic is a pointer so "not applicable" (gauge, summary) is
-	// distinguishable from "false" (non-monotonic sum).
-	Monotonic      *bool
-	AttributesJSON string
-	FirstSeenNS    int64
-	LastSeenNS     int64
-}
-
-// MetricPoint is a single scalar value for a series (Sum or Gauge).
-// Histogram / exp-histogram points land in their own types when those
-// stages arrive (see plans/metrics.md §4).
-type MetricPoint struct {
-	// Writer matches the point to its series by the tuple below; the
-	// store resolves it to a series_id inside the transaction.
-	SeriesRef     MetricSeriesRef
-	TimeNS        int64
-	StartTimeNS   int64 // 0 when not meaningful (gauge)
-	Value         float64
-}
-
-// MetricSeriesRef is the minimal tuple required to look up a series's
-// series_id inside a WriteBatch transaction. Matching the UNIQUE key on
-// metric_series: (resource_id, scope_id, name, attributes).
-type MetricSeriesRef struct {
-	ResourceID     uint64
-	ScopeID        uint64
-	Name           string
-	AttributesJSON string
-}
-
 // Batch is the unit of work for the writer goroutine.
 type Batch struct {
-	Resources     []Resource
-	Scopes        []Scope
-	Spans         []Span
-	Logs          []LogRecord
-	MetricSeries  []MetricSeries
-	MetricPoints  []MetricPoint
-	AttrKeys      []AttrKeyDelta
-	AttrValues    []AttrValueDelta
-	EnqueuedAt    time.Time
+	Resources  []Resource
+	Scopes     []Scope
+	Events     []Event
+	AttrKeys   []AttrKeyDelta
+	AttrValues []AttrValueDelta
+	EnqueuedAt time.Time
+
+	// MetaOverwrites counts ingest events whose attributes collided with a
+	// reserved meta.* key and got overwritten. Surfaced in logs for SDK
+	// debugging.
+	MetaOverwrites int64
 }
 
 // ServiceSummary is a row for the service/dataset selector.
@@ -180,37 +141,37 @@ type ServiceSummary struct {
 
 // TraceSummary is a row for the trace list view.
 type TraceSummary struct {
-	TraceID      string `json:"trace_id"`
-	RootService  string `json:"root_service"`
-	RootName     string `json:"root_name"`
-	StartTimeNS  int64  `json:"start_ns"`
-	DurationNS   int64  `json:"duration_ns"`
-	SpanCount    int64  `json:"span_count"`
-	HasError     bool   `json:"has_error"`
+	TraceID     string `json:"trace_id"`
+	RootService string `json:"root_service"`
+	RootName    string `json:"root_name"`
+	StartTimeNS int64  `json:"start_ns"`
+	DurationNS  int64  `json:"duration_ns"`
+	SpanCount   int64  `json:"span_count"`
+	HasError    bool   `json:"has_error"`
 }
 
 type TraceDetail struct {
-	TraceID   string             `json:"trace_id"`
-	Spans     []SpanOut          `json:"spans"`
+	TraceID   string              `json:"trace_id"`
+	Spans     []SpanOut           `json:"spans"`
 	Resources map[uint64]Resource `json:"resources"`
 }
 
 type SpanOut struct {
-	TraceID        string            `json:"trace_id"`
-	SpanID         string            `json:"span_id"`
-	ParentSpanID   string            `json:"parent_span_id,omitempty"`
-	ResourceID     uint64            `json:"resource_id"`
-	ServiceName    string            `json:"service_name"`
-	Name           string            `json:"name"`
-	Kind           int32             `json:"kind"`
-	StartTimeNS    int64             `json:"start_ns"`
-	EndTimeNS      int64             `json:"end_ns"`
-	DurationNS     int64             `json:"duration_ns"`
-	StatusCode     int32             `json:"status_code"`
-	StatusMessage  string            `json:"status_message,omitempty"`
-	AttributesJSON string            `json:"attributes"`
-	Events         []SpanEventOut    `json:"events,omitempty"`
-	Links          []SpanLinkOut     `json:"links,omitempty"`
+	TraceID        string         `json:"trace_id"`
+	SpanID         string         `json:"span_id"`
+	ParentSpanID   string         `json:"parent_span_id,omitempty"`
+	ResourceID     uint64         `json:"resource_id"`
+	ServiceName    string         `json:"service_name"`
+	Name           string         `json:"name"`
+	Kind           string         `json:"kind"` // OTel enum name: SERVER|CLIENT|INTERNAL|PRODUCER|CONSUMER|UNSPECIFIED
+	StartTimeNS    int64          `json:"start_ns"`
+	EndTimeNS      int64          `json:"end_ns"`
+	DurationNS     int64          `json:"duration_ns"`
+	StatusCode     int32          `json:"status_code"`
+	StatusMessage  string         `json:"status_message,omitempty"`
+	AttributesJSON string         `json:"attributes"`
+	Events         []SpanEventOut `json:"events,omitempty"`
+	Links          []SpanLinkOut  `json:"links,omitempty"`
 }
 
 type SpanEventOut struct {
@@ -231,28 +192,6 @@ type FieldInfo struct {
 	Count     int64  `json:"count"`
 }
 
-// MetricSummary is a row in the metric-name picker.
-type MetricSummary struct {
-	Name        string `json:"name"`
-	Kind        string `json:"kind"`
-	Unit        string `json:"unit,omitempty"`
-	Description string `json:"description,omitempty"`
-	SeriesCount int64  `json:"series_count"`
-}
-
-// MetricSeriesSummary is one row in the series list for a given metric.
-type MetricSeriesSummary struct {
-	SeriesID       int64  `json:"series_id"`
-	ServiceName    string `json:"service_name"`
-	Name           string `json:"name"`
-	Kind           string `json:"kind"`
-	Unit           string `json:"unit,omitempty"`
-	Temporality    string `json:"temporality,omitempty"`
-	AttributesJSON string `json:"attributes"`
-	FirstSeenNS    int64  `json:"first_seen_ns"`
-	LastSeenNS     int64  `json:"last_seen_ns"`
-}
-
 // QueryColumn is the output of one select/group-by expression.
 type QueryColumn struct {
 	Name string `json:"name"`
@@ -268,10 +207,7 @@ type QueryResult struct {
 }
 
 // QueryRateSpec tells the executor which output columns must be transformed
-// into a per-second delta after scan. The underlying SQL emitted by the
-// builder produces the raw SUM/AVG/MAX; the executor walks the rows,
-// groups by the non-bucket/non-rate-column tuple, and replaces each value
-// with (value - previous_value) / bucket_secs for consecutive buckets.
+// into a per-second delta after scan.
 type QueryRateSpec struct {
 	ColumnIndex int
 	BucketSecs  float64

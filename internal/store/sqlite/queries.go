@@ -14,12 +14,10 @@ import (
 
 // WriteBatch persists one ingest batch inside a single transaction.
 //
-// Order: resources → scopes → spans → span_events → span_links → logs →
-// metric_series → metric_points → attribute_keys → attribute_values.
-// Constraints fire in that order.
+// Order: resources → scopes → events → span_events → span_links →
+// attribute_keys → attribute_values. Constraints fire in that order.
 func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
-	if len(b.Spans) == 0 && len(b.Logs) == 0 && len(b.Resources) == 0 && len(b.Scopes) == 0 &&
-		len(b.MetricSeries) == 0 && len(b.MetricPoints) == 0 {
+	if len(b.Events) == 0 && len(b.Resources) == 0 && len(b.Scopes) == 0 {
 		return nil
 	}
 
@@ -35,17 +33,7 @@ func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
 	if err := writeScopes(ctx, tx, b.Scopes); err != nil {
 		return err
 	}
-	if err := writeSpans(ctx, tx, b.Spans); err != nil {
-		return err
-	}
-	if err := writeLogs(ctx, tx, b.Logs); err != nil {
-		return err
-	}
-	seriesIDs, err := upsertMetricSeries(ctx, tx, b.MetricSeries)
-	if err != nil {
-		return err
-	}
-	if err := writeMetricPoints(ctx, tx, b.MetricPoints, seriesIDs); err != nil {
+	if err := writeEvents(ctx, tx, b.Events); err != nil {
 		return err
 	}
 	if err := writeAttrKeys(ctx, tx, b.AttrKeys); err != nil {
@@ -107,195 +95,69 @@ func writeScopes(ctx context.Context, tx *sql.Tx, ss []store.Scope) error {
 	return nil
 }
 
-func writeSpans(ctx context.Context, tx *sql.Tx, spans []store.Span) error {
-	if len(spans) == 0 {
+func writeEvents(ctx context.Context, tx *sql.Tx, events []store.Event) error {
+	if len(events) == 0 {
 		return nil
 	}
-	const q = `INSERT INTO spans
-		(trace_id, span_id, parent_span_id, resource_id, scope_id, service_name,
-		 name, kind, start_time_ns, end_time_ns, status_code, status_message,
-		 trace_state, flags, dropped_attrs_count, dropped_events_count,
-		 dropped_links_count, attributes)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(trace_id, span_id) DO NOTHING`
+	const q = `INSERT INTO events
+		(time_ns, end_time_ns, resource_id, scope_id, service_name, name,
+		 trace_id, span_id, parent_span_id, status_code, status_message,
+		 trace_state, flags, severity_number, severity_text, body,
+		 observed_time_ns, value, attributes)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	stmt, err := tx.PrepareContext(ctx, q)
 	if err != nil {
-		return fmt.Errorf("prepare spans: %w", err)
+		return fmt.Errorf("prepare events: %w", err)
 	}
 	defer stmt.Close()
 
 	const eventQ = `INSERT INTO span_events
 		(trace_id, span_id, seq, time_ns, name, attributes, dropped_attrs_count)
 		VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`
-	eventStmt, err := tx.PrepareContext(ctx, eventQ)
+	evStmt, err := tx.PrepareContext(ctx, eventQ)
 	if err != nil {
 		return fmt.Errorf("prepare span_events: %w", err)
 	}
-	defer eventStmt.Close()
+	defer evStmt.Close()
 
 	const linkQ = `INSERT INTO span_links
 		(trace_id, span_id, seq, linked_trace_id, linked_span_id, trace_state,
 		 flags, attributes, dropped_attrs_count)
 		VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING`
-	linkStmt, err := tx.PrepareContext(ctx, linkQ)
+	lnStmt, err := tx.PrepareContext(ctx, linkQ)
 	if err != nil {
 		return fmt.Errorf("prepare span_links: %w", err)
 	}
-	defer linkStmt.Close()
+	defer lnStmt.Close()
 
-	for _, sp := range spans {
+	for _, e := range events {
 		if _, err := stmt.ExecContext(ctx,
-			sp.TraceID, sp.SpanID, nullBytes(sp.ParentSpanID), int64(sp.ResourceID),
-			int64(sp.ScopeID), sp.ServiceName, sp.Name, sp.Kind,
-			sp.StartTimeNS, sp.EndTimeNS, sp.StatusCode, nullStr(sp.StatusMessage),
-			nullStr(sp.TraceState), sp.Flags, sp.DroppedAttrsCount,
-			sp.DroppedEventsCount, sp.DroppedLinksCount, sp.AttributesJSON,
+			e.TimeNS, nullInt64Ptr(e.EndTimeNS), int64(e.ResourceID), int64(e.ScopeID),
+			e.ServiceName, e.Name,
+			nullBytes(e.TraceID), nullBytes(e.SpanID), nullBytes(e.ParentSpanID),
+			nullInt32Ptr(e.StatusCode), nullStr(e.StatusMessage),
+			nullStr(e.TraceState), nullUint32Ptr(e.Flags),
+			nullInt32Ptr(e.SeverityNumber), nullStr(e.SeverityText),
+			nullStr(e.Body), nullInt64Ptr(e.ObservedTimeNS),
+			nullFloat64Ptr(e.Value), e.AttributesJSON,
 		); err != nil {
-			return fmt.Errorf("insert span: %w", err)
+			return fmt.Errorf("insert event: %w", err)
 		}
-		for _, ev := range sp.Events {
-			if _, err := eventStmt.ExecContext(ctx,
+		for _, ev := range e.SpanEvents {
+			if _, err := evStmt.ExecContext(ctx,
 				ev.TraceID, ev.SpanID, ev.Seq, ev.TimeNS, ev.Name,
 				ev.AttributesJSON, ev.DroppedAttrsCount,
 			); err != nil {
 				return fmt.Errorf("insert span_event: %w", err)
 			}
 		}
-		for _, ln := range sp.Links {
-			if _, err := linkStmt.ExecContext(ctx,
+		for _, ln := range e.SpanLinks {
+			if _, err := lnStmt.ExecContext(ctx,
 				ln.TraceID, ln.SpanID, ln.Seq, ln.LinkedTraceID, ln.LinkedSpanID,
 				nullStr(ln.TraceState), ln.Flags, ln.AttributesJSON, ln.DroppedAttrsCount,
 			); err != nil {
 				return fmt.Errorf("insert span_link: %w", err)
 			}
-		}
-	}
-	return nil
-}
-
-func writeLogs(ctx context.Context, tx *sql.Tx, logs []store.LogRecord) error {
-	if len(logs) == 0 {
-		return nil
-	}
-	const q = `INSERT INTO logs
-		(resource_id, scope_id, service_name, time_ns, observed_time_ns,
-		 severity_number, severity_text, body, body_json, trace_id, span_id,
-		 flags, dropped_attrs_count, attributes)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-	stmt, err := tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare logs: %w", err)
-	}
-	defer stmt.Close()
-	for _, l := range logs {
-		if _, err := stmt.ExecContext(ctx,
-			int64(l.ResourceID), int64(l.ScopeID), l.ServiceName, l.TimeNS,
-			nullInt64(l.ObservedTimeNS), l.SeverityNumber, nullStr(l.SeverityText),
-			nullStr(l.Body), nullStr(l.BodyJSON), nullBytes(l.TraceID),
-			nullBytes(l.SpanID), l.Flags, l.DroppedAttrsCount, l.AttributesJSON,
-		); err != nil {
-			return fmt.Errorf("insert log: %w", err)
-		}
-	}
-	return nil
-}
-
-// upsertMetricSeries inserts each series if it doesn't already exist
-// (by the UNIQUE key on resource_id, scope_id, name, attributes) and
-// bumps its last_seen_ns / first_seen_ns otherwise. Returns a lookup
-// keyed by MetricSeriesRef so the caller (writeMetricPoints) can
-// resolve each point to a series_id inside the same transaction.
-func upsertMetricSeries(
-	ctx context.Context, tx *sql.Tx, series []store.MetricSeries,
-) (map[store.MetricSeriesRef]int64, error) {
-	ids := make(map[store.MetricSeriesRef]int64, len(series))
-	if len(series) == 0 {
-		return ids, nil
-	}
-	const upQ = `INSERT INTO metric_series
-		(resource_id, scope_id, service_name, name, description, unit, kind,
-		 temporality, monotonic, attributes, first_seen_ns, last_seen_ns)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(resource_id, scope_id, name, attributes) DO UPDATE SET
-		  last_seen_ns  = max(last_seen_ns, excluded.last_seen_ns),
-		  first_seen_ns = min(first_seen_ns, excluded.first_seen_ns)`
-	upStmt, err := tx.PrepareContext(ctx, upQ)
-	if err != nil {
-		return nil, fmt.Errorf("prepare metric_series: %w", err)
-	}
-	defer upStmt.Close()
-
-	const selQ = `SELECT series_id FROM metric_series
-		WHERE resource_id = ? AND scope_id = ? AND name = ? AND attributes = ?`
-	selStmt, err := tx.PrepareContext(ctx, selQ)
-	if err != nil {
-		return nil, fmt.Errorf("prepare metric_series lookup: %w", err)
-	}
-	defer selStmt.Close()
-
-	for _, s := range series {
-		var mono any
-		if s.Monotonic != nil {
-			if *s.Monotonic {
-				mono = 1
-			} else {
-				mono = 0
-			}
-		}
-		if _, err := upStmt.ExecContext(ctx,
-			int64(s.ResourceID), int64(s.ScopeID), s.ServiceName, s.Name,
-			nullStr(s.Description), nullStr(s.Unit), s.Kind,
-			nullStr(s.Temporality), mono, s.AttributesJSON,
-			s.FirstSeenNS, s.LastSeenNS,
-		); err != nil {
-			return nil, fmt.Errorf("upsert metric_series %q: %w", s.Name, err)
-		}
-		ref := store.MetricSeriesRef{
-			ResourceID: s.ResourceID, ScopeID: s.ScopeID,
-			Name: s.Name, AttributesJSON: s.AttributesJSON,
-		}
-		var id int64
-		if err := selStmt.QueryRowContext(ctx,
-			int64(ref.ResourceID), int64(ref.ScopeID), ref.Name, ref.AttributesJSON,
-		).Scan(&id); err != nil {
-			return nil, fmt.Errorf("resolve metric_series id %q: %w", s.Name, err)
-		}
-		ids[ref] = id
-	}
-	return ids, nil
-}
-
-// writeMetricPoints inserts scalar points (Sum / Gauge). Points whose
-// series_id can't be resolved from the same batch's MetricSeries are
-// skipped with a non-fatal error — such a point can't reference a
-// valid FK and would abort the whole transaction otherwise.
-func writeMetricPoints(
-	ctx context.Context, tx *sql.Tx,
-	points []store.MetricPoint, seriesIDs map[store.MetricSeriesRef]int64,
-) error {
-	if len(points) == 0 {
-		return nil
-	}
-	const q = `INSERT INTO metric_points
-		(series_id, time_ns, start_time_ns, value)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(series_id, time_ns) DO NOTHING`
-	stmt, err := tx.PrepareContext(ctx, q)
-	if err != nil {
-		return fmt.Errorf("prepare metric_points: %w", err)
-	}
-	defer stmt.Close()
-	for _, p := range points {
-		id, ok := seriesIDs[p.SeriesRef]
-		if !ok {
-			return fmt.Errorf("metric point for unknown series %+v", p.SeriesRef)
-		}
-		var startNS any
-		if p.StartTimeNS > 0 {
-			startNS = p.StartTimeNS
-		}
-		if _, err := stmt.ExecContext(ctx, id, p.TimeNS, startNS, p.Value); err != nil {
-			return fmt.Errorf("insert metric_point: %w", err)
 		}
 	}
 	return nil
@@ -361,7 +223,8 @@ func (s *Store) ListServices(ctx context.Context) ([]store.ServiceSummary, error
 	const q = `SELECT service_name,
 		COUNT(*) AS total,
 		SUM(CASE WHEN status_code = 2 THEN 1 ELSE 0 END) AS errs
-		FROM spans GROUP BY service_name ORDER BY total DESC`
+		FROM events WHERE signal_type = 'span'
+		GROUP BY service_name ORDER BY total DESC`
 	rows, err := s.reader.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
@@ -386,40 +249,36 @@ func (s *Store) ListTraces(ctx context.Context, f store.TraceFilter) ([]store.Tr
 
 	var b strings.Builder
 	b.WriteString(`WITH roots AS (
-		SELECT trace_id, span_id, service_name, name, start_time_ns, end_time_ns
-		FROM spans WHERE parent_span_id IS NULL`)
+		SELECT trace_id, span_id, service_name, name, time_ns, end_time_ns
+		FROM events WHERE signal_type = 'span' AND parent_span_id IS NULL`)
 	args := []any{}
 	if f.Service != "" {
 		b.WriteString(" AND service_name = ?")
 		args = append(args, f.Service)
 	}
 	if f.FromNS > 0 {
-		b.WriteString(" AND start_time_ns >= ?")
+		b.WriteString(" AND time_ns >= ?")
 		args = append(args, f.FromNS)
 	}
 	if f.ToNS > 0 {
-		b.WriteString(" AND start_time_ns < ?")
+		b.WriteString(" AND time_ns < ?")
 		args = append(args, f.ToNS)
 	}
 	if cursorNS, tidHex, ok := parseCompositeCursor(f.Cursor); ok {
-		// Composite cursor with trace_id as the tie-breaker — no row is
-		// ever skipped when multiple roots share start_time_ns.
 		if tid, err := hex.DecodeString(tidHex); err == nil {
-			b.WriteString(" AND (start_time_ns < ? OR (start_time_ns = ? AND trace_id < ?))")
+			b.WriteString(" AND (time_ns < ? OR (time_ns = ? AND trace_id < ?))")
 			args = append(args, cursorNS, cursorNS, tid)
 		}
 	}
-	b.WriteString(` ORDER BY start_time_ns DESC, trace_id DESC LIMIT ?)
-		SELECT r.trace_id, r.service_name, r.name, r.start_time_ns,
-		  (r.end_time_ns - r.start_time_ns) AS duration_ns,
-		  (SELECT COUNT(*) FROM spans s WHERE s.trace_id = r.trace_id) AS span_count,
-		  COALESCE((SELECT 1 FROM spans s WHERE s.trace_id = r.trace_id AND s.status_code = 2 LIMIT 1), 0) AS has_error
-		FROM roots r ORDER BY r.start_time_ns DESC, r.trace_id DESC`)
+	b.WriteString(` ORDER BY time_ns DESC, trace_id DESC LIMIT ?)
+		SELECT r.trace_id, r.service_name, r.name, r.time_ns,
+		  COALESCE(r.end_time_ns - r.time_ns, 0) AS duration_ns,
+		  (SELECT COUNT(*) FROM events e WHERE e.signal_type = 'span' AND e.trace_id = r.trace_id) AS span_count,
+		  COALESCE((SELECT 1 FROM events e WHERE e.signal_type = 'span' AND e.trace_id = r.trace_id AND e.status_code = 2 LIMIT 1), 0) AS has_error
+		FROM roots r ORDER BY r.time_ns DESC, r.trace_id DESC`)
 	args = append(args, limit)
 
 	if f.HasError != nil {
-		// Post-filter: the HAVING-style condition after the CTE.
-		// Simpler to re-wrap:
 		outer := "SELECT * FROM (" + b.String() + ") WHERE has_error = ?"
 		b.Reset()
 		b.WriteString(outer)
@@ -439,9 +298,9 @@ func (s *Store) ListTraces(ctx context.Context, f store.TraceFilter) ([]store.Tr
 	var out []store.TraceSummary
 	for rows.Next() {
 		var (
-			tid       []byte
-			ts        store.TraceSummary
-			hasError  int
+			tid      []byte
+			ts       store.TraceSummary
+			hasError int
 		)
 		if err := rows.Scan(&tid, &ts.RootService, &ts.RootName, &ts.StartTimeNS, &ts.DurationNS, &ts.SpanCount, &hasError); err != nil {
 			return nil, "", err
@@ -464,7 +323,7 @@ func (s *Store) ListTraces(ctx context.Context, f store.TraceFilter) ([]store.Tr
 
 // parseCompositeCursor decodes a "primary:secondary" cursor. Primary is
 // always an int64 timestamp; secondary is a free-form string tag (hex
-// trace_id for traces, log_id for logs). Malformed cursors are ignored
+// trace_id for traces, event_id for logs). Malformed cursors are ignored
 // (ok=false) so the caller treats it as no cursor and returns the first
 // page — same as an empty string.
 func parseCompositeCursor(s string) (primary int64, secondary string, ok bool) {
@@ -492,8 +351,10 @@ func (s *Store) GetTrace(ctx context.Context, traceIDHex string) (store.TraceDet
 		return store.TraceDetail{}, fmt.Errorf("invalid trace id: %w", err)
 	}
 	const spanQ = `SELECT span_id, parent_span_id, resource_id, service_name, name,
-		  kind, start_time_ns, end_time_ns, duration_ns, status_code, status_message, attributes
-		FROM spans WHERE trace_id = ? ORDER BY start_time_ns, span_id`
+		  COALESCE(span_kind, ''), time_ns, COALESCE(end_time_ns, time_ns),
+		  COALESCE(duration_ns, 0), COALESCE(status_code, 0), status_message, attributes
+		FROM events WHERE signal_type = 'span' AND trace_id = ?
+		ORDER BY time_ns, span_id`
 	rows, err := s.reader.QueryContext(ctx, spanQ, tid)
 	if err != nil {
 		return store.TraceDetail{}, err
@@ -530,7 +391,6 @@ func (s *Store) GetTrace(ctx context.Context, traceIDHex string) (store.TraceDet
 		return store.TraceDetail{}, err
 	}
 
-	// Attach events + links (one query per signal; simpler and spans-per-trace is small).
 	if err := s.attachEvents(ctx, tid, spans); err != nil {
 		return store.TraceDetail{}, err
 	}
@@ -641,28 +501,19 @@ func (s *Store) loadResources(ctx context.Context, ids map[uint64]struct{}) (map
 }
 
 func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.FieldInfo, error) {
-	if f.SignalType != "span" && f.SignalType != "log" {
-		return nil, errors.New("signal_type must be 'span' or 'log'")
+	switch f.SignalType {
+	case store.SignalSpan, store.SignalLog, store.SignalMetric:
+	default:
+		return nil, errors.New("signal_type must be 'span', 'log', or 'metric'")
 	}
 	limit := clampLimit(f.Limit, 100, 500)
-	// Start with the promoted / synthetic fields the query builder's
-	// realColumn() resolves natively (name, service.name, duration_ns,
-	// http.route, …). These aren't strictly required to be in
-	// attribute_keys — that table only tracks JSONB attrs — so the picker
-	// would otherwise hide the columns-only ones entirely. When a
-	// semconv'd key appears in both (the attribute sampler caught it in
-	// the JSONB payload), we'll merge the observation count in below so
-	// ordering still reflects real use.
+
 	out := matchingSyntheticFields(f.SignalType, f.Prefix)
 	byKey := make(map[string]int, len(out))
 	for i, fi := range out {
 		byKey[fi.Key] = i
 	}
 
-	// When a service is specified, constrain to that service plus the
-	// resource-level rows (service_name = '') so resource attributes still
-	// surface in autocomplete. When no service is specified, pool across
-	// every service — matches the UI's "no WHERE filter yet" state.
 	var (
 		q    string
 		args []any
@@ -691,10 +542,6 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		if err := rows.Scan(&fi.Key, &fi.ValueType, &fi.Count); err != nil {
 			return nil, err
 		}
-		// Dedupe by key: if the synthetic list already has this key
-		// (e.g. http.route — promoted column that also appears in
-		// attribute_keys via the sampler), keep the synthetic entry's
-		// canonical type but absorb the real observation count.
 		if idx, ok := byKey[fi.Key]; ok {
 			out[idx].Count += fi.Count
 			continue
@@ -711,23 +558,17 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 	return out, nil
 }
 
-// syntheticFields lists the fields the query builder resolves to a
-// promoted column or a synthetic expression via realColumn() that a span
-// or log *always* has — they're intrinsic to the row, not observed
-// attributes. Keys the sampler would ever record (http.route,
-// http.request.method, rpc.service, db.system, etc.) are deliberately
-// absent: they land in attribute_keys only for services that actually
-// emit them, so service-scoped picker results stay faithful to what the
-// service actually carries.
-// Keep in sync with internal/query/builder.go:realColumn().
+// syntheticFields per signal — promoted columns and meta.* attributes that are
+// always present and that the query builder resolves natively. Keep in sync
+// with realColumn() in internal/query/builder.go.
 var syntheticSpanFields = []store.FieldInfo{
 	{Key: "name", ValueType: "str"},
 	{Key: "service.name", ValueType: "str"},
-	{Key: "kind", ValueType: "int"},
+	{Key: "meta.span_kind", ValueType: "str"},
 	{Key: "status_code", ValueType: "int"},
 	{Key: "duration_ns", ValueType: "int"},
 	{Key: "duration_ms", ValueType: "int"},
-	{Key: "start_time_ns", ValueType: "time"},
+	{Key: "time_ns", ValueType: "time"},
 	{Key: "parent_span_id", ValueType: "str"},
 	{Key: "trace_id", ValueType: "str"},
 	{Key: "is_root", ValueType: "bool"},
@@ -747,22 +588,21 @@ var syntheticLogFields = []store.FieldInfo{
 var syntheticMetricFields = []store.FieldInfo{
 	{Key: "name", ValueType: "str"},
 	{Key: "service.name", ValueType: "str"},
-	{Key: "kind", ValueType: "str"},
-	{Key: "unit", ValueType: "str"},
-	{Key: "temporality", ValueType: "str"},
+	{Key: "meta.metric_kind", ValueType: "str"},
+	{Key: "meta.metric_unit", ValueType: "str"},
+	{Key: "meta.metric_temporality", ValueType: "str"},
 	{Key: "value", ValueType: "flt"},
 	{Key: "time_ns", ValueType: "time"},
-	{Key: "start_time_ns", ValueType: "time"},
 }
 
 func matchingSyntheticFields(signalType, prefix string) []store.FieldInfo {
 	var src []store.FieldInfo
 	switch signalType {
-	case "span":
+	case store.SignalSpan:
 		src = syntheticSpanFields
-	case "log":
+	case store.SignalLog:
 		src = syntheticLogFields
-	case "metric":
+	case store.SignalMetric:
 		src = syntheticMetricFields
 	default:
 		return nil
@@ -779,18 +619,14 @@ func matchingSyntheticFields(signalType, prefix string) []store.FieldInfo {
 func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]string, error) {
 	limit := clampLimit(f.Limit, 50, 200)
 
-	// Some high-value fields live in dedicated columns (span.name,
-	// service_name, http_route, etc.) rather than the attributes JSON, so
-	// the attribute_values sampler has no rows for them. For those, fall
-	// through to a DISTINCT scan on the source table — the column-backed
-	// indexes keep it cheap even at moderate data sizes.
-	if col, table, ok := realColumnForValues(f.SignalType, f.Key); ok {
-		return s.listColumnValues(ctx, table, col, f, limit)
+	// Column-backed autocomplete: some fields live as real or virtual columns
+	// on `events` (name, service_name, http_route, span_kind, …). Scan the
+	// column directly — more accurate than attribute_values and available for
+	// fields the sampler can't observe (e.g. generated columns).
+	if col, ok := realColumnForValues(f.SignalType, f.Key); ok {
+		return s.listEventColumnValues(ctx, col, f, limit)
 	}
 
-	// When no service is specified, pool values across every service and
-	// sum their occurrence counts — gives cross-service autocomplete when
-	// the user hasn't narrowed the dataset yet.
 	var (
 		q    string
 		args []any
@@ -823,67 +659,61 @@ func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]str
 	return out, rows.Err()
 }
 
-// realColumnForValues maps a user-facing field name to (column, table) when
-// the field is backed by a dedicated column. The column expression is the
-// raw SQL column/generated-column name — safe because it comes from a
-// hard-coded map, not from user input. Keep in sync with realColumn() in
-// internal/query/builder.go.
-func realColumnForValues(signalType, key string) (col, table string, ok bool) {
+// realColumnForValues maps a user-facing field name → events-table column when
+// the field is backed by a real or virtual column. Keep in sync with
+// realColumn() in internal/query/builder.go.
+func realColumnForValues(signalType, key string) (col string, ok bool) {
+	// Shared columns (identical column names across all signal types).
+	switch key {
+	case "name":
+		return "name", true
+	case "service.name":
+		return "service_name", true
+	case "trace_id":
+		return "trace_id", true
+	case "http.request.method":
+		return "http_method", true
+	case "http.response.status_code":
+		return "http_status_code", true
+	case "http.route":
+		return "http_route", true
+	case "rpc.service":
+		return "rpc_service", true
+	case "db.system":
+		return "db_system", true
+	case "meta.span_kind":
+		return "span_kind", true
+	case "meta.metric_kind":
+		return "metric_kind", true
+	case "meta.metric_unit":
+		return "metric_unit", true
+	case "meta.metric_temporality":
+		return "metric_temporality", true
+	case "meta.annotation_type":
+		return "annotation_type", true
+	}
 	switch signalType {
-	case "span":
-		switch key {
-		case "name":
-			return "name", "spans", true
-		case "service.name":
-			return "service_name", "spans", true
-		case "http.request.method":
-			return "http_method", "spans", true
-		case "http.response.status_code":
-			return "http_status_code", "spans", true
-		case "http.route":
-			return "http_route", "spans", true
-		case "rpc.service":
-			return "rpc_service", "spans", true
-		case "db.system":
-			return "db_system", "spans", true
-		}
-	case "log":
-		switch key {
-		case "service.name":
-			return "service_name", "logs", true
-		case "severity_text":
-			return "severity_text", "logs", true
-		}
-	case "metric":
-		switch key {
-		case "name":
-			return "name", "metric_series", true
-		case "service.name":
-			return "service_name", "metric_series", true
-		case "kind":
-			return "kind", "metric_series", true
-		case "unit":
-			return "unit", "metric_series", true
-		case "temporality":
-			return "temporality", "metric_series", true
+	case store.SignalLog:
+		if key == "severity_text" {
+			return "severity_text", true
 		}
 	}
-	return "", "", false
+	return "", false
 }
 
-func (s *Store) listColumnValues(
+func (s *Store) listEventColumnValues(
 	ctx context.Context,
-	table, col string,
+	col string,
 	f store.ValueFilter,
 	limit int,
 ) ([]string, error) {
-	// Prefix filter against the column. We cast to TEXT so integer columns
-	// like http_status_code still compare against the "200" the user types.
+	// Scope to the active signal so values from other signals don't leak.
 	q := fmt.Sprintf(`SELECT CAST(%s AS TEXT) AS v, COUNT(*) AS n
-		FROM %s
-		WHERE %s IS NOT NULL
-		  AND CAST(%s AS TEXT) LIKE ? || '%%'`, col, table, col, col)
-	args := []any{f.Prefix}
+		FROM events
+		WHERE signal_type = ?
+		  AND %s IS NOT NULL
+		  AND CAST(%s AS TEXT) LIKE ? || '%%'`, col, col, col)
+	args := []any{f.SignalType, f.Prefix}
 	if f.Service != "" {
 		q += ` AND service_name = ?`
 		args = append(args, f.Service)
@@ -913,10 +743,10 @@ func (s *Store) ListSpanNames(ctx context.Context, service, prefix string, limit
 	var q string
 	var args []any
 	if service != "" {
-		q = `SELECT DISTINCT name FROM spans WHERE service_name = ? AND name LIKE ? || '%' ORDER BY name LIMIT ?`
+		q = `SELECT DISTINCT name FROM events WHERE signal_type = 'span' AND service_name = ? AND name LIKE ? || '%' ORDER BY name LIMIT ?`
 		args = []any{service, prefix, limit}
 	} else {
-		q = `SELECT DISTINCT name FROM spans WHERE name LIKE ? || '%' ORDER BY name LIMIT ?`
+		q = `SELECT DISTINCT name FROM events WHERE signal_type = 'span' AND name LIKE ? || '%' ORDER BY name LIMIT ?`
 		args = []any{prefix, limit}
 	}
 	rows, err := s.reader.QueryContext(ctx, q, args...)
@@ -941,56 +771,44 @@ func (s *Store) SearchLogs(ctx context.Context, f store.LogFilter) ([]store.LogO
 	var b strings.Builder
 	args := []any{}
 	if f.Query != "" {
-		b.WriteString(`SELECT l.log_id, l.time_ns, l.service_name, l.severity_text, l.severity_number,
-			l.body, l.trace_id, l.span_id, l.attributes
-			FROM logs_fts JOIN logs l ON l.log_id = logs_fts.rowid
-			WHERE logs_fts MATCH ?`)
+		// FTS join — the FTS index covers both logs (via body) and spans (via
+		// name) but we only return log events from this endpoint.
+		b.WriteString(`SELECT e.event_id, e.time_ns, e.service_name, e.severity_text, e.severity_number,
+			e.body, e.trace_id, e.span_id, e.attributes
+			FROM events_fts JOIN events e ON e.event_id = events_fts.rowid
+			WHERE events_fts MATCH ? AND e.signal_type = 'log'`)
 		args = append(args, f.Query)
 	} else {
-		b.WriteString(`SELECT log_id, time_ns, service_name, severity_text, severity_number,
-			body, trace_id, span_id, attributes FROM logs WHERE 1=1`)
+		b.WriteString(`SELECT event_id, time_ns, service_name, severity_text, severity_number,
+			body, trace_id, span_id, attributes FROM events WHERE signal_type = 'log'`)
+	}
+	qualified := f.Query != ""
+	col := func(name string) string {
+		if qualified {
+			return "e." + name
+		}
+		return name
 	}
 	if f.Service != "" {
-		if f.Query != "" {
-			b.WriteString(" AND l.service_name = ?")
-		} else {
-			b.WriteString(" AND service_name = ?")
-		}
+		fmt.Fprintf(&b, " AND %s = ?", col("service_name"))
 		args = append(args, f.Service)
 	}
 	if f.FromNS > 0 {
-		if f.Query != "" {
-			b.WriteString(" AND l.time_ns >= ?")
-		} else {
-			b.WriteString(" AND time_ns >= ?")
-		}
+		fmt.Fprintf(&b, " AND %s >= ?", col("time_ns"))
 		args = append(args, f.FromNS)
 	}
 	if f.ToNS > 0 {
-		if f.Query != "" {
-			b.WriteString(" AND l.time_ns < ?")
-		} else {
-			b.WriteString(" AND time_ns < ?")
-		}
+		fmt.Fprintf(&b, " AND %s < ?", col("time_ns"))
 		args = append(args, f.ToNS)
 	}
 	if cursorNS, logIDStr, ok := parseCompositeCursor(f.Cursor); ok {
 		if logID, err := strconv.ParseInt(logIDStr, 10, 64); err == nil {
-			logIDCol := "log_id"
-			timeCol := "time_ns"
-			if f.Query != "" {
-				logIDCol = "l.log_id"
-				timeCol = "l.time_ns"
-			}
-			fmt.Fprintf(&b, " AND (%s < ? OR (%s = ? AND %s < ?))", timeCol, timeCol, logIDCol)
+			fmt.Fprintf(&b, " AND (%s < ? OR (%s = ? AND %s < ?))",
+				col("time_ns"), col("time_ns"), col("event_id"))
 			args = append(args, cursorNS, cursorNS, logID)
 		}
 	}
-	if f.Query != "" {
-		b.WriteString(" ORDER BY l.time_ns DESC, l.log_id DESC LIMIT ?")
-	} else {
-		b.WriteString(" ORDER BY time_ns DESC, log_id DESC LIMIT ?")
-	}
+	fmt.Fprintf(&b, " ORDER BY %s DESC, %s DESC LIMIT ?", col("time_ns"), col("event_id"))
 	args = append(args, limit)
 
 	rows, err := s.reader.QueryContext(ctx, b.String(), args...)
@@ -1004,12 +822,14 @@ func (s *Store) SearchLogs(ctx context.Context, f store.LogFilter) ([]store.LogO
 		var l store.LogOut
 		var sev sql.NullString
 		var body sql.NullString
+		var sevNum sql.NullInt32
 		var tid, sid []byte
-		if err := rows.Scan(&l.LogID, &l.TimeNS, &l.ServiceName, &sev, &l.SeverityNumber,
+		if err := rows.Scan(&l.LogID, &l.TimeNS, &l.ServiceName, &sev, &sevNum,
 			&body, &tid, &sid, &l.AttributesJSON); err != nil {
 			return nil, "", err
 		}
 		l.SeverityText = sev.String
+		l.SeverityNumber = sevNum.Int32
 		l.Body = body.String
 		if tid != nil {
 			l.TraceID = hex.EncodeToString(tid)
@@ -1033,14 +853,14 @@ func (s *Store) SearchLogs(ctx context.Context, f store.LogFilter) ([]store.LogO
 
 func (s *Store) RunQuery(
 	ctx context.Context,
-	sql string,
+	sqlStr string,
 	args []any,
 	columns []store.QueryColumn,
 	hasBucket bool,
 	groupKeys []string,
 	rates []store.QueryRateSpec,
 ) (store.QueryResult, error) {
-	rows, err := s.reader.QueryContext(ctx, sql, args...)
+	rows, err := s.reader.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return store.QueryResult{}, fmt.Errorf("query: %w", err)
 	}
@@ -1087,16 +907,8 @@ func applyRateTransforms(r *store.QueryResult, rates []store.QueryRateSpec) {
 	for _, s := range rates {
 		rateCols[s.ColumnIndex] = s.BucketSecs
 	}
-	// bucket column is always index 0 when HasBucket.
 	const bucketIdx = 0
 
-	// Group tuple = every column that is neither the bucket nor a rate
-	// column, and is not a non-rate aggregation. For rate purposes the
-	// GROUP BY coordinates are what matters; the simplest correct definition
-	// is "all columns that aren't the bucket and aren't themselves rate
-	// outputs". Non-rate aggregations (e.g. count) included in the same
-	// query are treated as distinct series and left untouched; they happen
-	// to contribute their own column index which we skip below.
 	groupIdxs := make([]int, 0, len(r.Columns))
 	for i := range r.Columns {
 		if i == bucketIdx {
@@ -1105,27 +917,18 @@ func applyRateTransforms(r *store.QueryResult, rates []store.QueryRateSpec) {
 		if _, isRate := rateCols[i]; isRate {
 			continue
 		}
-		// Only treat non-aggregation (GROUP BY) columns as grouping keys.
-		// Distinguish by type — aggregations produced by the builder are
-		// typed "int" or "float" and GROUP BY columns carry the resolved
-		// field type. We rely on a simpler rule: if the column is numeric
-		// AND its name looks like an aggregation alias (count, p95_xxx,
-		// sum_xxx, etc.), skip it. Otherwise include it.
 		if looksLikeAggAlias(r.Columns[i].Name) {
 			continue
 		}
 		groupIdxs = append(groupIdxs, i)
 	}
 
-	// Group rows by their GROUP BY tuple.
 	type groupState struct {
-		prev map[int]float64 // columnIndex -> last value
+		prev map[int]float64
 		seen bool
 	}
 	groups := map[string]*groupState{}
 
-	// Stable ordering: sort rows by (group key, bucket ASC) so diffs are
-	// computed against the immediate predecessor in the series.
 	sortByGroupThenBucket(r.Rows, groupIdxs, bucketIdx)
 
 	for _, row := range r.Rows {
@@ -1138,7 +941,6 @@ func applyRateTransforms(r *store.QueryResult, rates []store.QueryRateSpec) {
 		for col, bucketSecs := range rateCols {
 			curr, ok := asFloat(row[col])
 			if !ok {
-				// NULL or non-numeric: leave the rate as NULL.
 				row[col] = nil
 				continue
 			}
@@ -1178,7 +980,6 @@ func sortByGroupThenBucket(rows [][]any, groupIdxs []int, bucketIdx int) {
 }
 
 func sortRows(rows [][]any, less func(a, b []any) bool) {
-	// Small sort; rows tend to be 50-500 items for a dev tool.
 	for i := 1; i < len(rows); i++ {
 		for j := i; j > 0 && less(rows[j], rows[j-1]); j-- {
 			rows[j], rows[j-1] = rows[j-1], rows[j]
@@ -1257,9 +1058,6 @@ func asFloat(v any) (float64, bool) {
 	return 0, false
 }
 
-// looksLikeAggAlias is a heuristic — aggregation aliases produced by the
-// builder follow a known prefix set. Any column not matching is treated as
-// a GROUP BY key for rate-grouping purposes.
 func looksLikeAggAlias(name string) bool {
 	if name == "count" {
 		return true
@@ -1278,11 +1076,6 @@ func looksLikeAggAlias(name string) bool {
 	return false
 }
 
-// coerceForJSON turns the loosely-typed values SQLite gives us into shapes
-// that encode cleanly over JSON. The main issue is []byte, which encoding/json
-// would base64-encode — for our result set, there should be no BLOB columns
-// in query output (we only select scalars + timestamps), but the coercion is
-// defensive.
 func coerceForJSON(v any) any {
 	switch t := v.(type) {
 	case []byte:
@@ -1292,104 +1085,29 @@ func coerceForJSON(v any) any {
 	}
 }
 
-// ListMetrics backs the /api/metrics name picker. One row per unique
-// (name, kind) tuple — two instruments sharing a name but different
-// kinds (rare but legal in OTLP) show up separately.
-func (s *Store) ListMetrics(ctx context.Context, f store.MetricFilter) ([]store.MetricSummary, error) {
-	limit := clampLimit(f.Limit, 200, 500)
-	var b strings.Builder
-	b.WriteString(`SELECT name, kind,
-		COALESCE(MAX(unit), '') AS unit,
-		COALESCE(MAX(description), '') AS description,
-		COUNT(*) AS series_count
-		FROM metric_series WHERE 1=1`)
-	args := []any{}
-	if f.Service != "" {
-		b.WriteString(" AND service_name = ?")
-		args = append(args, f.Service)
-	}
-	if f.Prefix != "" {
-		b.WriteString(" AND name LIKE ? || '%'")
-		args = append(args, f.Prefix)
-	}
-	b.WriteString(" GROUP BY name, kind ORDER BY name ASC LIMIT ?")
-	args = append(args, limit)
-	rows, err := s.reader.QueryContext(ctx, b.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []store.MetricSummary
-	for rows.Next() {
-		var m store.MetricSummary
-		if err := rows.Scan(&m.Name, &m.Kind, &m.Unit, &m.Description, &m.SeriesCount); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
-// ListMetricSeries returns the individual (attribute-set) series for a
-// metric name — the "one row per line on the chart" view.
-func (s *Store) ListMetricSeries(ctx context.Context, f store.MetricSeriesFilter) ([]store.MetricSeriesSummary, error) {
-	if f.Name == "" {
-		return nil, errors.New("metric name is required")
-	}
-	limit := clampLimit(f.Limit, 200, 1000)
-	var b strings.Builder
-	b.WriteString(`SELECT series_id, service_name, name, kind,
-		COALESCE(unit, ''), COALESCE(temporality, ''),
-		attributes, first_seen_ns, last_seen_ns
-		FROM metric_series WHERE name = ?`)
-	args := []any{f.Name}
-	if f.Service != "" {
-		b.WriteString(" AND service_name = ?")
-		args = append(args, f.Service)
-	}
-	b.WriteString(" ORDER BY last_seen_ns DESC LIMIT ?")
-	args = append(args, limit)
-	rows, err := s.reader.QueryContext(ctx, b.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []store.MetricSeriesSummary
-	for rows.Next() {
-		var m store.MetricSeriesSummary
-		if err := rows.Scan(&m.SeriesID, &m.ServiceName, &m.Name, &m.Kind,
-			&m.Unit, &m.Temporality, &m.AttributesJSON,
-			&m.FirstSeenNS, &m.LastSeenNS); err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM spans WHERE start_time_ns < ?`, olderThanNS); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE time_ns < ?`, olderThanNS); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE time_ns < ?`, olderThanNS); err != nil {
+	// Span events and links get cleaned up by trace_id no-longer-referenced.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM span_events WHERE (trace_id, span_id) NOT IN
+			(SELECT trace_id, span_id FROM events WHERE signal_type='span')`); err != nil {
 		return err
 	}
-	// Metric points drop by their own time_ns. Series are kept even
-	// after all their points age out, because a fresh point arriving
-	// later should land on the same series_id (stable catalog).
-	if _, err := tx.ExecContext(ctx, `DELETE FROM metric_points WHERE time_ns < ?`, olderThanNS); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM span_links WHERE (trace_id, span_id) NOT IN
+			(SELECT trace_id, span_id FROM events WHERE signal_type='span')`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM resources
 		WHERE last_seen_ns < ?
-		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM spans)
-		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM logs)
-		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM metric_series)`, olderThanNS); err != nil {
+		  AND resource_id NOT IN (SELECT DISTINCT resource_id FROM events)`, olderThanNS); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -1404,10 +1122,7 @@ func (s *Store) Clear(ctx context.Context) error {
 	stmts := []string{
 		`DELETE FROM span_events`,
 		`DELETE FROM span_links`,
-		`DELETE FROM spans`,
-		`DELETE FROM logs`,
-		`DELETE FROM metric_points`,
-		`DELETE FROM metric_series`,
+		`DELETE FROM events`,
 		`DELETE FROM scopes`,
 		`DELETE FROM resources`,
 		`DELETE FROM attribute_keys`,
@@ -1458,4 +1173,32 @@ func nullBytes(b []byte) any {
 		return nil
 	}
 	return b
+}
+
+func nullInt64Ptr(p *int64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func nullInt32Ptr(p *int32) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func nullUint32Ptr(p *uint32) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+func nullFloat64Ptr(p *float64) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }

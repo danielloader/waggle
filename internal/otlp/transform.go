@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"sort"
+	"strings"
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -17,8 +18,21 @@ import (
 	"github.com/danielloader/waggle/internal/store"
 )
 
-// Transform converts an OTLP ExportTraceServiceRequest-level collection of
-// ResourceSpans into a store.Batch.
+// Reserved meta.* keys. Any OTel attribute with one of these keys is
+// overwritten at ingest with the system-computed value. Non-whitelisted
+// meta.foo user keys pass through untouched.
+var reservedMetaKeys = map[string]struct{}{
+	"meta.signal_type":       {},
+	"meta.annotation_type":   {},
+	"meta.span_kind":         {},
+	"meta.metric_kind":       {},
+	"meta.metric_unit":       {},
+	"meta.metric_temporality": {},
+	"meta.metric_monotonic":  {},
+}
+
+// TransformResourceSpans converts an OTLP ExportTraceServiceRequest-level
+// collection of ResourceSpans into a store.Batch of span Events.
 func TransformResourceSpans(batches []*tracepb.ResourceSpans) store.Batch {
 	t := newTransformer()
 	for _, rs := range batches {
@@ -27,7 +41,7 @@ func TransformResourceSpans(batches []*tracepb.ResourceSpans) store.Batch {
 	return t.finish()
 }
 
-// TransformResourceLogs converts ResourceLogs into a store.Batch.
+// TransformResourceLogs converts ResourceLogs into a store.Batch of log Events.
 func TransformResourceLogs(batches []*logspb.ResourceLogs) store.Batch {
 	t := newTransformer()
 	for _, rl := range batches {
@@ -36,11 +50,10 @@ func TransformResourceLogs(batches []*logspb.ResourceLogs) store.Batch {
 	return t.finish()
 }
 
-// TransformResourceMetrics converts ResourceMetrics into a store.Batch.
-// v1 writes Sum + Gauge data points into metric_series + metric_points;
-// histogram / exp-histogram / summary instruments are decoded (so the
-// catalog knows about them) but their data points are currently dropped
-// because the sibling tables for distributions aren't live yet.
+// TransformResourceMetrics converts ResourceMetrics into a store.Batch of
+// metric Events. Scalar kinds (Sum, Gauge) produce one Event per data point;
+// Histogram / ExpHistogram / Summary are not yet written (attribute catalog
+// only) until distribution support lands.
 func TransformResourceMetrics(batches []*metricspb.ResourceMetrics) store.Batch {
 	t := newTransformer()
 	for _, rm := range batches {
@@ -50,15 +63,13 @@ func TransformResourceMetrics(batches []*metricspb.ResourceMetrics) store.Batch 
 }
 
 type transformer struct {
-	now          int64
-	resources    map[uint64]store.Resource
-	scopes       map[uint64]store.Scope
-	spans        []store.Span
-	logs         []store.LogRecord
-	metricSeries map[store.MetricSeriesRef]store.MetricSeries
-	metricPoints []store.MetricPoint
-	attrKeys     map[attrKeyID]*store.AttrKeyDelta
-	attrValues   map[attrValueID]*store.AttrValueDelta
+	now            int64
+	resources      map[uint64]store.Resource
+	scopes         map[uint64]store.Scope
+	events         []store.Event
+	attrKeys       map[attrKeyID]*store.AttrKeyDelta
+	attrValues     map[attrValueID]*store.AttrValueDelta
+	metaOverwrites int64
 }
 
 type attrKeyID struct {
@@ -77,29 +88,23 @@ type attrValueID struct {
 
 func newTransformer() *transformer {
 	return &transformer{
-		now:          time.Now().UnixNano(),
-		resources:    map[uint64]store.Resource{},
-		scopes:       map[uint64]store.Scope{},
-		metricSeries: map[store.MetricSeriesRef]store.MetricSeries{},
-		attrKeys:     map[attrKeyID]*store.AttrKeyDelta{},
-		attrValues:   map[attrValueID]*store.AttrValueDelta{},
+		now:        time.Now().UnixNano(),
+		resources:  map[uint64]store.Resource{},
+		scopes:     map[uint64]store.Scope{},
+		attrKeys:   map[attrKeyID]*store.AttrKeyDelta{},
+		attrValues: map[attrValueID]*store.AttrValueDelta{},
 	}
 }
 
 func (t *transformer) finish() store.Batch {
-	b := store.Batch{EnqueuedAt: time.Now()}
+	b := store.Batch{EnqueuedAt: time.Now(), MetaOverwrites: t.metaOverwrites}
 	for _, r := range t.resources {
 		b.Resources = append(b.Resources, r)
 	}
 	for _, s := range t.scopes {
 		b.Scopes = append(b.Scopes, s)
 	}
-	b.Spans = t.spans
-	b.Logs = t.logs
-	for _, s := range t.metricSeries {
-		b.MetricSeries = append(b.MetricSeries, s)
-	}
-	b.MetricPoints = t.metricPoints
+	b.Events = t.events
 	for _, d := range t.attrKeys {
 		b.AttrKeys = append(b.AttrKeys, *d)
 	}
@@ -133,10 +138,6 @@ func (t *transformer) ingestResourceLogs(rl *logspb.ResourceLogs) {
 
 func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string) {
 	attrs, service, ns, ver, inst, sdkN, sdkL, sdkV := explodeResource(r)
-	// Hash on a canonical form (stable across key orderings) so identical
-	// resource sets always dedupe to the same row, but store a flat JSON
-	// object for display — that's what the UI's attribute parser and
-	// downstream queries expect.
 	id := hash64("res", canonicalJSON(attrs))
 	flat := attrsToJSON(attrs)
 
@@ -154,7 +155,6 @@ func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string) 
 			FirstSeenNS:       t.now,
 			LastSeenNS:        t.now,
 		}
-		// Surface resource-level attribute keys in the catalog too.
 		t.noteAttrKeys("resource", "", r.GetAttributes())
 	}
 	return id, service
@@ -180,84 +180,111 @@ func (t *transformer) registerScope(sc *commonpb.InstrumentationScope) uint64 {
 }
 
 func (t *transformer) ingestSpan(sp *tracepb.Span, resID, scopeID uint64, service string) {
-	attrsJSON := attrsToJSON(sp.Attributes)
+	meta := map[string]any{
+		"meta.signal_type": store.SignalSpan,
+		"meta.span_kind":   spanKindString(sp.Kind),
+	}
+	attrsJSON := t.buildAttrs(sp.Attributes, meta)
 
-	row := store.Span{
-		TraceID:            cloneBytes(sp.TraceId),
-		SpanID:             cloneBytes(sp.SpanId),
-		ParentSpanID:       cloneBytes(sp.ParentSpanId),
-		ResourceID:         resID,
-		ScopeID:            scopeID,
-		ServiceName:        service,
-		Name:               sp.Name,
-		Kind:               int32(sp.Kind),
-		StartTimeNS:        int64(sp.StartTimeUnixNano),
-		EndTimeNS:          int64(sp.EndTimeUnixNano),
-		StatusCode:         statusCode(sp.Status),
-		StatusMessage:      statusMessage(sp.Status),
-		TraceState:         sp.TraceState,
-		Flags:              sp.Flags,
-		DroppedAttrsCount:  sp.DroppedAttributesCount,
-		DroppedEventsCount: sp.DroppedEventsCount,
-		DroppedLinksCount:  sp.DroppedLinksCount,
-		AttributesJSON:     attrsJSON,
+	endNS := int64(sp.EndTimeUnixNano)
+	statusCode := statusCode(sp.Status)
+	flags := sp.Flags
+
+	row := store.Event{
+		TimeNS:         int64(sp.StartTimeUnixNano),
+		EndTimeNS:      &endNS,
+		ResourceID:     resID,
+		ScopeID:        scopeID,
+		ServiceName:    service,
+		Name:           sp.Name,
+		TraceID:        cloneBytes(sp.TraceId),
+		SpanID:         cloneBytes(sp.SpanId),
+		ParentSpanID:   cloneBytes(sp.ParentSpanId),
+		StatusCode:     &statusCode,
+		StatusMessage:  statusMessage(sp.Status),
+		TraceState:     sp.TraceState,
+		Flags:          &flags,
+		AttributesJSON: attrsJSON,
 	}
 
 	for i, ev := range sp.Events {
-		row.Events = append(row.Events, store.SpanEvent{
+		evMeta := map[string]any{
+			"meta.signal_type":     store.SignalSpan,
+			"meta.annotation_type": "span_event",
+		}
+		row.SpanEvents = append(row.SpanEvents, store.SpanEvent{
 			TraceID: row.TraceID, SpanID: row.SpanID, Seq: i,
 			TimeNS: int64(ev.TimeUnixNano), Name: ev.Name,
-			AttributesJSON:    attrsToJSON(ev.Attributes),
+			AttributesJSON:    t.buildAttrs(ev.Attributes, evMeta),
 			DroppedAttrsCount: ev.DroppedAttributesCount,
 		})
 		t.noteAttrKeys("event", service, ev.Attributes)
 	}
 	for i, ln := range sp.Links {
-		row.Links = append(row.Links, store.SpanLink{
+		lnMeta := map[string]any{
+			"meta.signal_type":     store.SignalSpan,
+			"meta.annotation_type": "link",
+		}
+		row.SpanLinks = append(row.SpanLinks, store.SpanLink{
 			TraceID: row.TraceID, SpanID: row.SpanID, Seq: i,
 			LinkedTraceID: cloneBytes(ln.TraceId), LinkedSpanID: cloneBytes(ln.SpanId),
 			TraceState: ln.TraceState, Flags: ln.Flags,
-			AttributesJSON:    attrsToJSON(ln.Attributes),
+			AttributesJSON:    t.buildAttrs(ln.Attributes, lnMeta),
 			DroppedAttrsCount: ln.DroppedAttributesCount,
 		})
 		t.noteAttrKeys("link", service, ln.Attributes)
 	}
 
-	t.spans = append(t.spans, row)
-	t.noteAttrKeys("span", service, sp.Attributes)
-	t.noteAttrValues("span", service, sp.Attributes)
+	t.events = append(t.events, row)
+	t.noteAttrKeys(store.SignalSpan, service, sp.Attributes)
+	t.noteAttrValues(store.SignalSpan, service, sp.Attributes)
 }
 
 func (t *transformer) ingestLog(lr *logspb.LogRecord, resID, scopeID uint64, service string) {
 	body, bodyJSON := flattenAnyValue(lr.Body)
-
-	row := store.LogRecord{
-		ResourceID:        resID,
-		ScopeID:           scopeID,
-		ServiceName:       service,
-		TimeNS:            int64(lr.TimeUnixNano),
-		ObservedTimeNS:    int64(lr.ObservedTimeUnixNano),
-		SeverityNumber:    int32(lr.SeverityNumber),
-		SeverityText:      lr.SeverityText,
-		Body:              body,
-		BodyJSON:          bodyJSON,
-		TraceID:           cloneBytes(lr.TraceId),
-		SpanID:            cloneBytes(lr.SpanId),
-		Flags:             lr.Flags,
-		DroppedAttrsCount: lr.DroppedAttributesCount,
-		AttributesJSON:    attrsToJSON(lr.Attributes),
+	meta := map[string]any{
+		"meta.signal_type": store.SignalLog,
 	}
-	t.logs = append(t.logs, row)
-	t.noteAttrKeys("log", service, lr.Attributes)
-	t.noteAttrValues("log", service, lr.Attributes)
+	// If the body was structured, stash the JSON form as an attribute so it's
+	// still queryable without a dedicated body_json column.
+	if bodyJSON != "" {
+		meta["body.structured"] = json.RawMessage(bodyJSON)
+	}
+	attrsJSON := t.buildAttrs(lr.Attributes, meta)
+
+	sevNum := int32(lr.SeverityNumber)
+	flags := lr.Flags
+	var obsPtr *int64
+	if lr.ObservedTimeUnixNano != 0 {
+		obs := int64(lr.ObservedTimeUnixNano)
+		obsPtr = &obs
+	}
+
+	row := store.Event{
+		TimeNS:         int64(lr.TimeUnixNano),
+		ResourceID:     resID,
+		ScopeID:        scopeID,
+		ServiceName:    service,
+		Name:           "",
+		TraceID:        cloneBytes(lr.TraceId),
+		SpanID:         cloneBytes(lr.SpanId),
+		Flags:          &flags,
+		SeverityNumber: &sevNum,
+		SeverityText:   lr.SeverityText,
+		Body:           body,
+		ObservedTimeNS: obsPtr,
+		AttributesJSON: attrsJSON,
+	}
+	t.events = append(t.events, row)
+	t.noteAttrKeys(store.SignalLog, service, lr.Attributes)
+	t.noteAttrValues(store.SignalLog, service, lr.Attributes)
 }
 
 // ingestResourceMetrics walks a ResourceMetrics envelope, registers the
 // resource + scopes, and routes each Metric to the per-kind decoder.
-// Histogram / ExpHistogram / Summary metrics are catalogued (so their
-// series keys appear in the attribute catalog) but their data points
-// are not yet written — the sibling tables for distributions land in a
-// later stage; see plans/metrics.md §4.
+// Histogram / ExpHistogram / Summary metrics are noted in the attribute
+// catalog (so their series keys appear in /api/fields) but no Event rows
+// are emitted — distribution support lands separately.
 func (t *transformer) ingestResourceMetrics(rm *metricspb.ResourceMetrics) {
 	resID, service := t.registerResource(rm.Resource)
 	for _, sm := range rm.ScopeMetrics {
@@ -273,47 +300,40 @@ func (t *transformer) ingestMetric(
 ) {
 	switch data := m.Data.(type) {
 	case *metricspb.Metric_Sum:
-		kind := "sum"
 		temp := temporalityString(data.Sum.GetAggregationTemporality())
 		mono := data.Sum.GetIsMonotonic()
 		for _, p := range data.Sum.GetDataPoints() {
-			t.ingestNumberPoint(m, kind, temp, &mono, p, resID, scopeID, service)
+			t.ingestNumberPoint(m, "sum", temp, &mono, p, resID, scopeID, service)
 		}
 	case *metricspb.Metric_Gauge:
 		for _, p := range data.Gauge.GetDataPoints() {
 			t.ingestNumberPoint(m, "gauge", "", nil, p, resID, scopeID, service)
 		}
 	case *metricspb.Metric_Histogram:
-		// Catalogue only — see stages 4–5.
-		temp := temporalityString(data.Histogram.GetAggregationTemporality())
 		for _, p := range data.Histogram.GetDataPoints() {
-			t.catalogueSeries(m, "histogram", temp, nil, p.Attributes,
-				resID, scopeID, service)
+			t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
+			t.noteAttrValues(store.SignalMetric, service, p.Attributes)
 		}
 	case *metricspb.Metric_ExponentialHistogram:
-		temp := temporalityString(data.ExponentialHistogram.GetAggregationTemporality())
 		for _, p := range data.ExponentialHistogram.GetDataPoints() {
-			t.catalogueSeries(m, "exp_histogram", temp, nil, p.Attributes,
-				resID, scopeID, service)
+			t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
+			t.noteAttrValues(store.SignalMetric, service, p.Attributes)
 		}
 	case *metricspb.Metric_Summary:
 		for _, p := range data.Summary.GetDataPoints() {
-			t.catalogueSeries(m, "summary", "", nil, p.Attributes,
-				resID, scopeID, service)
+			t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
+			t.noteAttrValues(store.SignalMetric, service, p.Attributes)
 		}
 	}
 }
 
-// ingestNumberPoint handles Sum + Gauge data points — both represented
-// by metricspb.NumberDataPoint. Writes a series row + a scalar point.
+// ingestNumberPoint handles Sum + Gauge data points. Emits one Event per
+// datapoint — no series dedup; every datapoint carries its own attrs.
 func (t *transformer) ingestNumberPoint(
 	m *metricspb.Metric, kind, temporality string, monotonic *bool,
 	p *metricspb.NumberDataPoint,
 	resID, scopeID uint64, service string,
 ) {
-	ref := t.catalogueSeries(m, kind, temporality, monotonic, p.Attributes,
-		resID, scopeID, service)
-
 	var value float64
 	switch v := p.Value.(type) {
 	case *metricspb.NumberDataPoint_AsDouble:
@@ -323,50 +343,41 @@ func (t *transformer) ingestNumberPoint(
 	default:
 		return
 	}
-	t.metricPoints = append(t.metricPoints, store.MetricPoint{
-		SeriesRef:   ref,
-		TimeNS:      int64(p.TimeUnixNano),
-		StartTimeNS: int64(p.StartTimeUnixNano),
-		Value:       value,
-	})
-}
 
-// catalogueSeries upserts the (resource, scope, name, attrs) row into
-// the per-batch metricSeries map and returns the ref so the caller can
-// emit points. Also notes each attribute key/value under the "metric"
-// signal so `/api/fields?dataset=metric` has something to serve.
-func (t *transformer) catalogueSeries(
-	m *metricspb.Metric, kind, temporality string, monotonic *bool,
-	attrs []*commonpb.KeyValue,
-	resID, scopeID uint64, service string,
-) store.MetricSeriesRef {
-	attrsJSON := attrsToJSON(attrs)
-	ref := store.MetricSeriesRef{
-		ResourceID: resID, ScopeID: scopeID,
-		Name: m.Name, AttributesJSON: attrsJSON,
+	meta := map[string]any{
+		"meta.signal_type": store.SignalMetric,
+		"meta.metric_kind": kind,
 	}
-	if existing, ok := t.metricSeries[ref]; ok {
-		existing.LastSeenNS = t.now
-		t.metricSeries[ref] = existing
-	} else {
-		t.metricSeries[ref] = store.MetricSeries{
-			ResourceID:     resID,
-			ScopeID:        scopeID,
-			ServiceName:    service,
-			Name:           m.Name,
-			Description:    m.Description,
-			Unit:           m.Unit,
-			Kind:           kind,
-			Temporality:    temporality,
-			Monotonic:      monotonic,
-			AttributesJSON: attrsJSON,
-			FirstSeenNS:    t.now,
-			LastSeenNS:     t.now,
+	if m.Unit != "" {
+		meta["meta.metric_unit"] = m.Unit
+	}
+	if temporality != "" {
+		meta["meta.metric_temporality"] = temporality
+	}
+	if monotonic != nil {
+		if *monotonic {
+			meta["meta.metric_monotonic"] = 1
+		} else {
+			meta["meta.metric_monotonic"] = 0
 		}
 	}
-	t.noteAttrKeys("metric", service, attrs)
-	t.noteAttrValues("metric", service, attrs)
-	return ref
+	if m.Description != "" {
+		meta["meta.metric_description"] = m.Description
+	}
+	attrsJSON := t.buildAttrs(p.Attributes, meta)
+
+	row := store.Event{
+		TimeNS:         int64(p.TimeUnixNano),
+		ResourceID:     resID,
+		ScopeID:        scopeID,
+		ServiceName:    service,
+		Name:           m.Name,
+		Value:          &value,
+		AttributesJSON: attrsJSON,
+	}
+	t.events = append(t.events, row)
+	t.noteAttrKeys(store.SignalMetric, service, p.Attributes)
+	t.noteAttrValues(store.SignalMetric, service, p.Attributes)
 }
 
 func temporalityString(t metricspb.AggregationTemporality) string {
@@ -379,9 +390,52 @@ func temporalityString(t metricspb.AggregationTemporality) string {
 	return ""
 }
 
+// spanKindString maps OTel's Span.Kind enum to its canonical string form,
+// the same surface Honeycomb exposes in meta.span_kind.
+func spanKindString(k tracepb.Span_SpanKind) string {
+	switch k {
+	case tracepb.Span_SPAN_KIND_INTERNAL:
+		return "INTERNAL"
+	case tracepb.Span_SPAN_KIND_SERVER:
+		return "SERVER"
+	case tracepb.Span_SPAN_KIND_CLIENT:
+		return "CLIENT"
+	case tracepb.Span_SPAN_KIND_PRODUCER:
+		return "PRODUCER"
+	case tracepb.Span_SPAN_KIND_CONSUMER:
+		return "CONSUMER"
+	}
+	return "UNSPECIFIED"
+}
+
+// buildAttrs merges user attributes with system-stamped meta.* keys. If a
+// user key collides with a reserved meta.* key, the system value wins and
+// the overwrite counter bumps for telemetry.
+func (t *transformer) buildAttrs(userAttrs []*commonpb.KeyValue, metaStamps map[string]any) string {
+	m := attrsToMap(userAttrs)
+	for k, v := range metaStamps {
+		if _, collision := m[k]; collision {
+			if _, reserved := reservedMetaKeys[k]; reserved {
+				t.metaOverwrites++
+			}
+		}
+		m[k] = v
+	}
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
 // noteAttrKeys registers each (key, valueType) observation for the catalog.
+// Keys starting with "meta." are filtered out from the catalog view since
+// they're structural and surface via syntheticFields instead.
 func (t *transformer) noteAttrKeys(signalType, service string, attrs []*commonpb.KeyValue) {
 	for _, kv := range attrs {
+		if strings.HasPrefix(kv.Key, "meta.") {
+			continue
+		}
 		vt := kvValueType(kv.Value)
 		id := attrKeyID{signalType, service, kv.Key, vt}
 		if d, ok := t.attrKeys[id]; ok {
@@ -397,10 +451,12 @@ func (t *transformer) noteAttrKeys(signalType, service string, attrs []*commonpb
 }
 
 // noteAttrValues registers a bounded top-K sampling of values for str/int/bool
-// attributes. Bounded per-batch to keep the map small; final bounding is done
-// server-side by the periodic prune.
+// attributes.
 func (t *transformer) noteAttrValues(signalType, service string, attrs []*commonpb.KeyValue) {
 	for _, kv := range attrs {
+		if strings.HasPrefix(kv.Key, "meta.") {
+			continue
+		}
 		vt := kvValueType(kv.Value)
 		if vt != "str" && vt != "int" && vt != "bool" {
 			continue
@@ -457,7 +513,6 @@ func explodeResource(r *resourcepb.Resource) (attrs []*commonpb.KeyValue, servic
 
 func canonicalJSON(attrs []*commonpb.KeyValue) string {
 	m := attrsToMap(attrs)
-	// Encode sorted-by-key so the hash is stable.
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)
@@ -576,7 +631,7 @@ func kvValueString(v *commonpb.AnyValue) (string, bool) {
 }
 
 // flattenAnyValue returns a plain-text representation suitable for FTS5 +
-// the original JSON form when the body was structured. Both may be empty.
+// the original JSON form when the body was structured.
 func flattenAnyValue(v *commonpb.AnyValue) (text, jsonForm string) {
 	if v == nil {
 		return "", ""
@@ -625,7 +680,6 @@ func hash64(domain, payload string) uint64 {
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(payload))
 	v := h.Sum64()
-	// Clamp to 63 bits so it fits cleanly into SQLite INTEGER (signed 64-bit).
 	return v & ((1 << 63) - 1)
 }
 
