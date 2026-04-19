@@ -383,6 +383,7 @@ const orderSchema = z.object({
 });
 
 export const querySearchSchema = z.object({
+  dataset: z.enum(DATASETS).default("events"),
   range: z.enum(TIME_RANGES).default("1h"),
   // Absolute start/end in milliseconds. When both are set, they override
   // `range` — this is what click-to-zoom and the custom picker write. The

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { Accordion } from "../components/ui/Accordion";
 import { DefinePanel } from "../features/query/DefinePanel";
 import { QueryChart } from "../features/query/QueryChart";
@@ -11,36 +11,25 @@ import {
   refreshIntervalMs,
   resolveSearchRange,
   runQuery,
-  type Dataset,
   type QuerySearch,
 } from "../lib/query";
 import { useRefreshPersistence } from "../lib/refreshPersistence";
+import { eventsRoute } from "../router";
 
 // Scroll distance (in Explore-Data pixels) over which the query/chart
 // accordions collapse linearly from fully open to fully closed.
 const COLLAPSE_DISTANCE = 220;
 
-export type EventsPagePath = "/traces" | "/logs" | "/metrics" | "/events";
-
-interface Props {
-  /** Signal the route pins this page to. The Define panel's dataset pill
-   *  switches by navigating to a sibling route, so this is always the
-   *  dataset of the current URL. */
-  dataset: Dataset;
-  /** Current route path — used to compose `navigate({ to: path, … })`
-   *  calls so search-state mutations stay on the right URL. */
-  path: EventsPagePath;
-}
-
 /**
- * Unified query/chart/results page. Four routes (/traces, /logs, /metrics,
- * /events) all render this component with different `dataset` props —
- * signal-specific navigation with no code duplication.
+ * Unified events page. Supersedes the per-signal /traces, /logs, /metrics
+ * pages — the signal type is just one more filter the user can set. The
+ * dataset selector inside the Define panel switches between "events"
+ * (all signals), "spans", "logs", "metrics"; that choice drives a
+ * signal_type='…' preset filter on the backend + the chart gate for
+ * metrics (which only makes sense scoped to a single metric name).
  */
-export function EventsPage({ dataset, path }: Props) {
-  // Pull the search params without binding to a specific route — that way
-  // one component can live under any of the four peer routes.
-  const search = useSearch({ strict: false }) as QuerySearch;
+export function EventsPage() {
+  const search = eventsRoute.useSearch();
   const navigate = useNavigate();
 
   const [queryOpen, setQueryOpen] = useState(true);
@@ -76,31 +65,18 @@ export function EventsPage({ dataset, path }: Props) {
   };
 
   const setSearch = (next: QuerySearch) =>
-    navigate({
-      to: path,
-      search: next as unknown as Record<string, unknown>,
-    });
-
-  // Switching dataset = navigating to the sibling route. Preserve the
-  // rest of the search state so filters carry across.
-  const changeDataset = (d: Dataset) => {
-    const next: EventsPagePath =
-      d === "spans" ? "/traces"
-      : d === "logs" ? "/logs"
-      : d === "metrics" ? "/metrics"
-      : "/events";
-    navigate({ to: next, search: search as unknown as Record<string, unknown> });
-  };
+    navigate({ to: "/events", search: next as unknown as Record<string, unknown> });
 
   useRefreshPersistence(search, setSearch);
 
   const chart = useQuery({
-    queryKey: ["query", dataset, search],
-    queryFn: ({ signal }) => runQuery(buildCountQuery(dataset, search), signal),
+    queryKey: ["query", search.dataset, search],
+    queryFn: ({ signal }) =>
+      runQuery(buildCountQuery(search.dataset, search), signal),
     refetchInterval: refreshIntervalMs(search.refresh),
     // Metrics across "all metrics in the store" is meaningless — gate on
     // a `name = …` filter before we issue the query.
-    enabled: dataset !== "metrics" || pickedMetricName(search) !== "",
+    enabled: search.dataset !== "metrics" || pickedMetricName(search) !== "",
   });
 
   const resolved = resolveSearchRange(search);
@@ -116,7 +92,7 @@ export function EventsPage({ dataset, path }: Props) {
   };
 
   const metricsNeedsName =
-    dataset === "metrics" && pickedMetricName(search) === "";
+    search.dataset === "metrics" && pickedMetricName(search) === "";
 
   return (
     <div className="h-full flex flex-col">
@@ -125,11 +101,10 @@ export function EventsPage({ dataset, path }: Props) {
         open={queryOpen}
         collapseProgress={scrollProgress}
         onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
-        collapsedSummary={querySummary(dataset, search)}
+        collapsedSummary={querySummary(search)}
       >
         <DefinePanel
-          dataset={dataset}
-          onDatasetChange={changeDataset}
+          dataset={search.dataset}
           search={search}
           onChange={setSearch}
           onRun={() => chart.refetch()}
@@ -165,7 +140,7 @@ export function EventsPage({ dataset, path }: Props) {
       </Accordion>
       <div className="flex-1 overflow-hidden">
         <ResultTabs
-          dataset={dataset}
+          dataset={search.dataset}
           search={search}
           onTabChange={(tab) => setSearch({ ...search, tab })}
           onExploreScrollY={handleExploreScrollY}
@@ -180,11 +155,12 @@ function pickedMetricName(search: QuerySearch): string {
   return typeof f?.value === "string" ? f.value : "";
 }
 
-function querySummary(dataset: Dataset, search: QuerySearch): string {
-  const parts: string[] = [dataset];
+function querySummary(search: QuerySearch): string {
+  const parts: string[] = [search.dataset];
   if (search.where.length)
     parts.push(`${search.where.length} filter${search.where.length === 1 ? "" : "s"}`);
   if (search.group_by.length)
     parts.push(`group by ${search.group_by.join(", ")}`);
   return parts.join(" · ");
 }
+
