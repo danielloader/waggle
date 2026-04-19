@@ -416,7 +416,7 @@ function buildSeries(
   aggIdx: number,
   { fromMs, toMs, bucketMs }: { fromMs: number; toMs: number; bucketMs: number },
 ): {
-  data: { t: number; [k: string]: number }[];
+  data: { t: number; [k: string]: number | null }[];
   series: { key: string; label: string }[];
 } {
   if (!result || !result.has_bucket || !result.rows) return { data: [], series: [] };
@@ -434,14 +434,17 @@ function buildSeries(
 
   const seen = new Set<string>();
   const seriesOrder: { key: string; label: string }[] = [];
-  const byBucket = new Map<number, { t: number; [k: string]: number }>();
+  const byBucket = new Map<number, { t: number; [k: string]: number | null }>();
 
   for (const row of result.rows) {
     const bucketNS = Number(row[bucketIdx]);
     const t = Math.floor(bucketNS / 1_000_000);
     const label = groupIdxs.length === 0 ? "count" : groupIdxs.map((g) => String(row[g] ?? "·")).join(" / ");
     const key = sanitizeKey(label);
-    const value = Number(row[aggIdx] ?? 0);
+    const raw = row[aggIdx];
+    // Preserve explicit nulls from the server (e.g. MAX of an empty set)
+    // as gaps rather than coercing to 0.
+    const value = raw === null || raw === undefined ? null : Number(raw);
     if (!seen.has(key)) {
       seen.add(key);
       seriesOrder.push({ key, label });
@@ -451,11 +454,20 @@ function buildSeries(
     byBucket.set(t, bucket);
   }
 
-  // Zero-fill missing buckets across the query's full range. Matches the
-  // backend's alignment — buckets are emitted at `(ns / bucketNs) *
-  // bucketNs`, so the corresponding ms boundary is `floor(t / bucketMs) *
-  // bucketMs`. For every expected bucket position, if we have a row we
-  // keep it; otherwise we inject a zero for each discovered series.
+  // Fill missing buckets across the query's full range. What we fill with
+  // depends on the aggregation:
+  //
+  //   - COUNT / COUNT_* / rate_sum on a counter: "absence" is meaningful
+  //     — no events in this bucket really does mean 0. Zero-fill.
+  //   - MAX / AVG / MIN / P50..P99 / SUM / rate_avg / rate_max on
+  //     arbitrary values: "absence" means we didn't observe anything.
+  //     Filling with 0 makes gauges look like they plunged; the line
+  //     should instead render as a gap. Null-fill.
+  //
+  // Recharts respects nulls in Line/Area data: with the default
+  // connectNulls=false behaviour they render as visible breaks.
+  const aggLabel = result.columns[aggIdx]?.name ?? "";
+  const missingValue: number | null = missingFillValue(aggLabel);
   if (bucketMs > 0 && toMs > fromMs) {
     const filled: typeof byBucket = new Map();
     const startMs = Math.floor(fromMs / bucketMs) * bucketMs;
@@ -464,8 +476,8 @@ function buildSeries(
       if (existing) {
         filled.set(t, existing);
       } else {
-        const row: { t: number; [k: string]: number } = { t };
-        for (const s of seriesOrder) row[s.key] = 0;
+        const row: { t: number; [k: string]: number | null } = { t };
+        for (const s of seriesOrder) row[s.key] = missingValue;
         filled.set(t, row);
       }
     }
@@ -481,6 +493,18 @@ function buildSeries(
 
   const data = Array.from(byBucket.values()).sort((a, b) => a.t - b.t);
   return { data, series: seriesOrder };
+}
+
+// missingFillValue returns 0 when absence is semantically 0 (a COUNT over
+// an empty set is 0) and null for everything else (a MAX/AVG/etc. over an
+// empty set is undefined, not 0). Matches the alias-prefix convention the
+// builder uses — count_*, rate_sum_* treat absence as 0; MAX/AVG/P99/SUM
+// treat it as "no observation".
+function missingFillValue(aliasName: string): number | null {
+  if (aliasName === "count") return 0;
+  if (aliasName.startsWith("count_")) return 0;
+  if (aliasName.startsWith("rate_sum_")) return 0;
+  return null;
 }
 
 function sanitizeKey(s: string): string {
