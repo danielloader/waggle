@@ -49,8 +49,8 @@ export const logsRoute = createRoute({
 });
 
 // /metrics — metric-name picker up top; same Define/Chart/Explore
-// skeleton as the other datasets, query engine running against the
-// metric_points + metric_series join.
+// skeleton as the other datasets; query engine filters the unified
+// events table by signal_type='metric'.
 export const metricsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/metrics",

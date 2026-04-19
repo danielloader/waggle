@@ -73,26 +73,6 @@ export interface LogOut {
   attributes: string;
 }
 
-export interface MetricSummary {
-  name: string;
-  kind: string;
-  unit?: string;
-  description?: string;
-  series_count: number;
-}
-
-export interface MetricSeriesSummary {
-  series_id: number;
-  service_name: string;
-  name: string;
-  kind: string;
-  unit?: string;
-  temporality?: string;
-  attributes: string;
-  first_seen_ns: number;
-  last_seen_ns: number;
-}
-
 /**
  * HttpError carries the status code alongside the parsed body so callers
  * can switch on 404/400 without string-matching the message.
@@ -145,18 +125,6 @@ export const api = {
   searchLogs: (params: URLSearchParams, signal?: AbortSignal) =>
     getJSON<{ logs: LogOut[]; next_cursor: string }>(
       `/api/logs/search?${params.toString()}`,
-      signal,
-    ),
-
-  listMetrics: (params: URLSearchParams, signal?: AbortSignal) =>
-    getJSON<{ metrics: MetricSummary[] }>(
-      `/api/metrics?${params.toString()}`,
-      signal,
-    ),
-
-  listMetricSeries: (name: string, params: URLSearchParams, signal?: AbortSignal) =>
-    getJSON<{ series: MetricSeriesSummary[] }>(
-      `/api/metrics/${encodeURIComponent(name)}/series?${params.toString()}`,
       signal,
     ),
 };
