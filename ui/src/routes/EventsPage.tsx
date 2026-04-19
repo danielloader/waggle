@@ -315,7 +315,7 @@ function ChartWithEdit({
           trigger={
             <button
               type="button"
-              className="p-1 rounded cursor-pointer hover:bg-[var(--color-card-hover)]"
+              className="p-1 rounded cursor-pointer hover:bg-card-hover"
               title="Edit chart"
               aria-label="Edit chart"
             >
@@ -345,7 +345,7 @@ function ChartSettingsEditor({
   onChange: (patch: Partial<ChartSettings>) => void;
 }) {
   return (
-    <div className="flex flex-col gap-3 p-1 min-w-[220px]">
+    <div className="flex flex-col gap-3 p-1 min-w-55">
       <fieldset className="flex flex-col gap-1">
         <legend
           className="text-[11px] uppercase tracking-wide font-medium pb-1"
