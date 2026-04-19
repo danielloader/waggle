@@ -3,8 +3,11 @@ import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
-  PanelLeftClose,
+  Gauge,
+  Layers,
   PanelLeft,
+  PanelLeftClose,
+  ScrollText,
 } from "lucide-react";
 import clsx from "clsx";
 
@@ -108,12 +111,10 @@ export function RootLayout() {
           </button>
         </div>
         <nav className="p-2 flex flex-col gap-1 flex-1">
-          {navItem(
-            "/events",
-            "Events",
-            <Activity />,
-            pathname === "/" || pathname.startsWith("/events") || pathname === "/traces" || pathname === "/logs" || pathname === "/metrics",
-          )}
+          {navItem("/traces", "Traces", <Activity />, pathname.startsWith("/traces"))}
+          {navItem("/logs", "Logs", <ScrollText />, pathname.startsWith("/logs"))}
+          {navItem("/metrics", "Metrics", <Gauge />, pathname.startsWith("/metrics"))}
+          {navItem("/events", "Events", <Layers />, pathname.startsWith("/events"))}
         </nav>
         <div
           className={clsx(
