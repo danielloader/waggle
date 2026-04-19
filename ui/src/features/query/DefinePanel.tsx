@@ -106,6 +106,8 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
             value={summarizeSelect(search.select, dataset)}
             editor={
               <SelectEditor
+                dataset={dataset}
+                service={service}
                 select={search.select}
                 onChange={(select) => onChange({ ...search, select })}
               />

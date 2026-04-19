@@ -43,6 +43,29 @@ interface Props {
    * ms — caller can narrow the window (zoom) and jump to Explore Data.
    */
   onBucketClick?: (tMs: number) => void;
+  /**
+   * Which aggregation column to plot. Defaults to the first aggregation.
+   * Multi-SELECT queries render one <QueryChart> per aggregation index.
+   */
+  aggIdx?: number;
+}
+
+/** aggregationIndices returns one entry per aggregation column in the
+ *  result — callers iterate these to render one chart per SELECT.
+ *
+ *  Column layout from the builder (when bucketed):
+ *    [0]            bucket_ns
+ *    [1..1+G]       GROUP BY columns (len = group_keys.length)
+ *    [1+G..end]     aggregations, one per SELECT item
+ */
+export function aggregationIndices(result: QueryResult | undefined): { idx: number; label: string }[] {
+  if (!result || !result.has_bucket) return [];
+  const firstAgg = 1 + (result.group_keys?.length ?? 0);
+  const out: { idx: number; label: string }[] = [];
+  for (let i = firstAgg; i < result.columns.length; i++) {
+    out.push({ idx: i, label: result.columns[i].name });
+  }
+  return out;
 }
 
 /**
@@ -60,13 +83,18 @@ export function QueryChart({
   fromMs,
   toMs,
   onBucketClick,
+  aggIdx,
 }: Props) {
+  // Default to the first aggregation when the caller didn't specify one —
+  // keeps the single-SELECT case behaving as before.
+  const numGroups = result?.group_keys?.length ?? 0;
+  const effectiveAggIdx = aggIdx ?? 1 + numGroups;
   // Zero-fill any missing buckets so the chart doesn't interpolate a
   // smooth curve across quiet periods. Each "no data" bucket drops to 0
   // for every series, producing an obvious visual gap between bursts.
   const { data, series } = useMemo(
-    () => buildSeries(result, { fromMs, toMs, bucketMs }),
-    [result, fromMs, toMs, bucketMs],
+    () => buildSeries(result, effectiveAggIdx, { fromMs, toMs, bucketMs }),
+    [result, effectiveAggIdx, fromMs, toMs, bucketMs],
   );
 
   const durationMs = Math.max(1, toMs - fromMs);
@@ -339,6 +367,7 @@ function humanBucket(ms: number): string {
 
 function buildSeries(
   result: QueryResult | undefined,
+  aggIdx: number,
   { fromMs, toMs, bucketMs }: { fromMs: number; toMs: number; bucketMs: number },
 ): {
   data: { t: number; [k: string]: number }[];
@@ -347,16 +376,15 @@ function buildSeries(
   if (!result || !result.has_bucket || !result.rows) return { data: [], series: [] };
 
   const bucketIdx = 0;
+  // group_keys holds the GROUP BY column aliases (without bucket_ns). So
+  // columns 1..1+numGroups are GROUP BYs; aggregations start at
+  // 1 + numGroups. See aggregationIndices above.
+  const numGroups = result.group_keys?.length ?? 0;
   const groupIdxs: number[] = [];
-  let aggIdx = -1;
-  for (let i = 1; i < result.columns.length; i++) {
-    if (i === result.columns.length - 1) {
-      aggIdx = i;
-    } else {
-      groupIdxs.push(i);
-    }
+  for (let i = 1; i <= numGroups; i++) groupIdxs.push(i);
+  if (aggIdx < 1 + numGroups || aggIdx >= result.columns.length) {
+    return { data: [], series: [] };
   }
-  if (aggIdx === -1) return { data: [], series: [] };
 
   const seen = new Set<string>();
   const seriesOrder: { key: string; label: string }[] = [];

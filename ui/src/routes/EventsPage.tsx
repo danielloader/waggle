@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Accordion } from "../components/ui/Accordion";
 import { DefinePanel } from "../features/query/DefinePanel";
-import { QueryChart } from "../features/query/QueryChart";
+import { aggregationIndices, QueryChart } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
 import {
   bucketMsFor,
@@ -11,6 +11,7 @@ import {
   refreshIntervalMs,
   resolveSearchRange,
   runQuery,
+  type QueryResult,
   type QuerySearch,
 } from "../lib/query";
 import { useRefreshPersistence } from "../lib/refreshPersistence";
@@ -129,7 +130,7 @@ export function EventsPage() {
               or <code className="mx-1 font-mono">P99(memory.used)</code>.
             </div>
           ) : (
-            <QueryChart
+            <ChartStack
               result={chart.data}
               loading={chart.isPending}
               error={chart.error}
@@ -159,6 +160,71 @@ export function EventsPage() {
 // a metric" = "the user put a field-bound aggregation in Select".
 function hasMetricField(search: QuerySearch): boolean {
   return search.select.some((a) => a.field !== undefined && a.field !== "");
+}
+
+// ChartStack renders one chart per SELECT aggregation. Multi-metric queries
+// like `COUNT + P99(duration_ns)` previously collapsed onto one y-axis with
+// wildly incompatible scales; splitting into stacked charts gives each
+// aggregation its own y-axis and its own labelled header. All charts share
+// the time window / bucket size so they stay aligned.
+function ChartStack({
+  result,
+  loading,
+  error,
+  bucketMs,
+  fromMs,
+  toMs,
+  onBucketClick,
+}: {
+  result: QueryResult | undefined;
+  loading: boolean;
+  error: unknown;
+  bucketMs: number;
+  fromMs: number;
+  toMs: number;
+  onBucketClick?: (tMs: number) => void;
+}) {
+  const aggs = aggregationIndices(result);
+  // While the query is in-flight (and we still have no prior result), we
+  // fall back to rendering a single QueryChart so the loading spinner
+  // appears where the chart will land.
+  if (aggs.length <= 1) {
+    return (
+      <QueryChart
+        result={result}
+        loading={loading}
+        error={error}
+        bucketMs={bucketMs}
+        fromMs={fromMs}
+        toMs={toMs}
+        onBucketClick={onBucketClick}
+      />
+    );
+  }
+  return (
+    <div className="flex flex-col gap-4">
+      {aggs.map((a) => (
+        <div key={a.idx}>
+          <div
+            className="text-[11px] uppercase tracking-wide font-medium pb-1 px-1"
+            style={{ color: "var(--color-ink-muted)" }}
+          >
+            {a.label}
+          </div>
+          <QueryChart
+            result={result}
+            loading={loading}
+            error={error}
+            bucketMs={bucketMs}
+            fromMs={fromMs}
+            toMs={toMs}
+            onBucketClick={onBucketClick}
+            aggIdx={a.idx}
+          />
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function querySummary(search: QuerySearch): string {
