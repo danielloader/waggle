@@ -5,8 +5,24 @@
  */
 import { z } from "zod";
 
-export const DATASETS = ["spans", "logs", "metrics"] as const;
+// "events" is the mixed-signal view (no signal_type prefix filter). The
+// other three pin queries to one signal. The UI defaults to "events" and
+// lets the user narrow via a pill in the Define panel.
+export const DATASETS = ["events", "spans", "logs", "metrics"] as const;
 export type Dataset = (typeof DATASETS)[number];
+
+export function datasetLabel(d: Dataset): string {
+  switch (d) {
+    case "events":
+      return "events";
+    case "spans":
+      return "spans";
+    case "logs":
+      return "logs";
+    case "metrics":
+      return "metrics";
+  }
+}
 
 export const AGG_OPS = [
   "count",
@@ -367,6 +383,7 @@ const orderSchema = z.object({
 });
 
 export const querySearchSchema = z.object({
+  dataset: z.enum(DATASETS).default("events"),
   range: z.enum(TIME_RANGES).default("1h"),
   // Absolute start/end in milliseconds. When both are set, they override
   // `range` — this is what click-to-zoom and the custom picker write. The

@@ -2,6 +2,7 @@ import { Play, RotateCw } from "lucide-react";
 import type { Dataset } from "../../lib/query";
 import type { QuerySearch } from "../../lib/query";
 import {
+  DATASETS,
   selectOrDefault,
   summarizeFilters,
   summarizeGroupBy,
@@ -57,12 +58,10 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
       <div className="flex items-center justify-between px-4 pt-3 pb-1 gap-3">
         <div className="flex items-center gap-2 flex-wrap">
           <h1 className="text-lg font-semibold">Query in</h1>
-          <span
-            className="px-2 py-0.5 rounded border text-sm font-medium"
-            style={{ background: "var(--color-card)", borderColor: "var(--color-border)" }}
-          >
-            {datasetLabel}
-          </span>
+          <DatasetSelect
+            value={datasetLabel}
+            onChange={(d) => onChange({ ...search, dataset: d })}
+          />
           <span style={{ color: "var(--color-ink-muted)" }}>·</span>
           <ServicePicker
             where={search.where}
@@ -190,6 +189,41 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+function DatasetSelect({
+  value,
+  onChange,
+}: {
+  value: Dataset;
+  onChange: (next: Dataset) => void;
+}) {
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as Dataset)}
+        className="appearance-none pl-2.5 pr-6 py-0.5 rounded border text-sm font-medium cursor-pointer"
+        style={{
+          background: "var(--color-card)",
+          borderColor: "var(--color-border)",
+          color: "var(--color-ink)",
+        }}
+      >
+        {DATASETS.map((d) => (
+          <option key={d} value={d}>
+            {d}
+          </option>
+        ))}
+      </select>
+      <span
+        className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-xs"
+        style={{ color: "var(--color-ink-muted)" }}
+      >
+        ▾
+      </span>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Accordion } from "../components/ui/Accordion";
@@ -14,23 +14,24 @@ import {
   type QuerySearch,
 } from "../lib/query";
 import { useRefreshPersistence } from "../lib/refreshPersistence";
-import { metricsRoute } from "../router";
+import { eventsRoute } from "../router";
 
+// Scroll distance (in Explore-Data pixels) over which the query/chart
+// accordions collapse linearly from fully open to fully closed.
 const COLLAPSE_DISTANCE = 220;
 
 /**
- * Metrics explorer. Same skeleton as traces / logs — the Define panel
- * drives filtering via WHERE. Scoping to a single metric is just a
- * `name = <metric>` WHERE filter, which the shared filter editor's
- * value-autocomplete populates from /api/fields/name/values.
- *
- * The chart only renders once a `name =` filter is present — otherwise
- * we'd be aggregating MAX(value) across every metric in the store,
- * which never means anything useful.
+ * Unified events page. Supersedes the per-signal /traces, /logs, /metrics
+ * pages — the signal type is just one more filter the user can set. The
+ * dataset selector inside the Define panel switches between "events"
+ * (all signals), "spans", "logs", "metrics"; that choice drives a
+ * signal_type='…' preset filter on the backend + the chart gate for
+ * metrics (which only makes sense scoped to a single metric name).
  */
-export function MetricsPage() {
-  const search = metricsRoute.useSearch();
+export function EventsPage() {
+  const search = eventsRoute.useSearch();
   const navigate = useNavigate();
+
   const [queryOpen, setQueryOpen] = useState(true);
   const [chartOpen, setChartOpen] = useState(true);
   const [scrollProgress, setScrollProgress] = useState(0);
@@ -41,6 +42,7 @@ export function MetricsPage() {
     setChartOpen(true);
     setScrollProgress(0);
   }, [search.tab]);
+
   useEffect(
     () => () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -56,32 +58,25 @@ export function MetricsPage() {
       setScrollProgress((prev) => (prev === p ? prev : p));
     });
   };
+
   const reopen = (set: (v: boolean) => void) => {
     setScrollProgress(0);
     set(true);
   };
 
   const setSearch = (next: QuerySearch) =>
-    navigate({ to: "/metrics", search: next as unknown as Record<string, unknown> });
+    navigate({ to: "/events", search: next as unknown as Record<string, unknown> });
 
   useRefreshPersistence(search, setSearch);
 
-  // Gate the chart on the user having scoped to one metric. An aggregate
-  // over "all metrics in the store" is meaningless; better to prompt
-  // than render a misleading line.
-  const pickedName = useMemo(() => {
-    const nameFilter = search.where.find(
-      (f) => f.field === "name" && f.op === "=",
-    );
-    return typeof nameFilter?.value === "string" ? nameFilter.value : "";
-  }, [search.where]);
-
   const chart = useQuery({
-    queryKey: ["query", "metrics", search],
+    queryKey: ["query", search.dataset, search],
     queryFn: ({ signal }) =>
-      runQuery(buildCountQuery("metrics", search), signal),
+      runQuery(buildCountQuery(search.dataset, search), signal),
     refetchInterval: refreshIntervalMs(search.refresh),
-    enabled: pickedName !== "",
+    // Metrics across "all metrics in the store" is meaningless — gate on
+    // a `name = …` filter before we issue the query.
+    enabled: search.dataset !== "metrics" || pickedMetricName(search) !== "",
   });
 
   const resolved = resolveSearchRange(search);
@@ -96,6 +91,9 @@ export function MetricsPage() {
     });
   };
 
+  const metricsNeedsName =
+    search.dataset === "metrics" && pickedMetricName(search) === "";
+
   return (
     <div className="h-full flex flex-col">
       <Accordion
@@ -103,10 +101,10 @@ export function MetricsPage() {
         open={queryOpen}
         collapseProgress={scrollProgress}
         onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
-        collapsedSummary={querySummary(search, pickedName)}
+        collapsedSummary={querySummary(search)}
       >
         <DefinePanel
-          dataset="metrics"
+          dataset={search.dataset}
           search={search}
           onChange={setSearch}
           onRun={() => chart.refetch()}
@@ -119,7 +117,7 @@ export function MetricsPage() {
         onToggle={() => setChartOpen((o) => !o)}
       >
         <div className="p-3" style={{ background: "var(--color-surface)" }}>
-          {pickedName === "" ? (
+          {metricsNeedsName ? (
             <div
               className="flex items-center justify-center text-sm px-4 text-center"
               style={{ color: "var(--color-ink-muted)", height: 125 }}
@@ -142,7 +140,7 @@ export function MetricsPage() {
       </Accordion>
       <div className="flex-1 overflow-hidden">
         <ResultTabs
-          dataset="metrics"
+          dataset={search.dataset}
           search={search}
           onTabChange={(tab) => setSearch({ ...search, tab })}
           onExploreScrollY={handleExploreScrollY}
@@ -152,17 +150,17 @@ export function MetricsPage() {
   );
 }
 
-function querySummary(search: QuerySearch, picked: string): string {
-  const parts: string[] = [];
-  if (picked) parts.push(picked);
-  const otherFilters = search.where.filter(
-    (f) => !(f.field === "name" && f.op === "="),
-  );
-  if (otherFilters.length)
-    parts.push(
-      `${otherFilters.length} filter${otherFilters.length === 1 ? "" : "s"}`,
-    );
+function pickedMetricName(search: QuerySearch): string {
+  const f = search.where.find((f) => f.field === "name" && f.op === "=");
+  return typeof f?.value === "string" ? f.value : "";
+}
+
+function querySummary(search: QuerySearch): string {
+  const parts: string[] = [search.dataset];
+  if (search.where.length)
+    parts.push(`${search.where.length} filter${search.where.length === 1 ? "" : "s"}`);
   if (search.group_by.length)
     parts.push(`group by ${search.group_by.join(", ")}`);
   return parts.join(" · ");
 }
+

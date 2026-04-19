@@ -240,6 +240,13 @@ interface Suggestion {
 // them first in autocomplete gives users a fast path to the common ones
 // without having to know the attribute-key catalog.
 const SYNTHETIC_FIELDS_BY_DATASET: Record<Dataset, { key: string; type: string }[]> = {
+  events: [
+    { key: "signal_type", type: "string" },
+    { key: "service.name", type: "string" },
+    { key: "name", type: "string" },
+    { key: "trace_id", type: "string" },
+    { key: "time_ns", type: "time" },
+  ],
   spans: [
     { key: "is_root", type: "bool" },
     { key: "error", type: "bool" },

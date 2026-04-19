@@ -23,14 +23,15 @@ interface Props {
 
 /**
  * Events table. Sits below the chart and shows matching rows for the current
- * dataset + WHERE + time range. Backed by the same /api/query endpoint the
- * chart uses; empty SELECT switches that endpoint into raw-rows mode.
+ * dataset + WHERE + time range. Rows render polymorphically based on each
+ * row's `signal_type`: span rows show duration + status + trace link; log
+ * rows show severity + body; metric rows show metric kind + value.
+ *
+ * When the current dataset is "events" (all signals) rows from different
+ * signals mix naturally. When it's pinned to spans/logs/metrics the render
+ * path is the same — every row simply carries the same signal_type.
  */
 export function EventsTable({ dataset, search, onScrollY }: Props) {
-  // The cache key includes the raw search (range preset OR from/to).
-  // Resolving inside queryFn would be cleaner but TanStack needs a stable
-  // key for de-dup — so we key on the raw inputs and resolve inside the
-  // query body each fetch (picking up fresh "now" for presets).
   const result = useQuery({
     queryKey: [
       "events",
@@ -76,183 +77,23 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
     );
   }
 
-  if (dataset === "spans") {
-    return <SpansTable result={result.data!} onScrollY={onScrollY} />;
-  }
-  if (dataset === "metrics") {
-    return <MetricsTable result={result.data!} onScrollY={onScrollY} />;
-  }
-  return <LogsTable result={result.data!} onScrollY={onScrollY} />;
+  return <UnifiedTable dataset={dataset} result={result.data!} onScrollY={onScrollY} />;
 }
 
 // ---------------------------------------------------------------------------
-// Metrics
+// Unified renderer
 // ---------------------------------------------------------------------------
 
-function MetricsTable({
+function UnifiedTable({
+  dataset,
   result,
   onScrollY,
 }: {
+  dataset: Dataset;
   result: QueryResult;
   onScrollY?: (y: number) => void;
 }) {
   const idx = columnIndex(result);
-  return (
-    <div
-      className="h-full overflow-auto"
-      onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
-    >
-      <table className="w-full border-separate border-spacing-0 text-sm">
-        <thead
-          className="sticky top-0 z-10 text-left text-xs"
-          style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
-        >
-          <tr>
-            <Th>Time</Th>
-            <Th>Service</Th>
-            <Th>Metric</Th>
-            <Th>Kind</Th>
-            <Th>Value</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.rows.map((row, i) => {
-            const timeNS = Number(row[idx.time_ns] ?? 0);
-            const service = String(row[idx.service_name] ?? "");
-            const name = String(row[idx.name] ?? "");
-            const kind = String(row[idx.kind] ?? "");
-            const value = row[idx.value];
-            return (
-              <tr
-                key={i}
-                className={clsx(
-                  "hover:bg-[var(--color-card-hover)]",
-                  i % 2 === 1 && "bg-[var(--color-card-stripe)]",
-                )}
-              >
-                <Td muted>{formatWall(timeNS)}</Td>
-                <Td>{service}</Td>
-                <Td className="font-mono">{name}</Td>
-                <Td muted>{kind}</Td>
-                <Td className="tabular-nums">{formatMetricValue(value)}</Td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function formatMetricValue(v: unknown): string {
-  if (v === null || v === undefined) return "—";
-  const n = typeof v === "number" ? v : Number(v);
-  if (!Number.isFinite(n)) return String(v);
-  // Large counter values benefit from thousands separators.
-  return n.toLocaleString();
-}
-
-// ---------------------------------------------------------------------------
-// Spans
-// ---------------------------------------------------------------------------
-
-function SpansTable({
-  result,
-  onScrollY,
-}: {
-  result: QueryResult;
-  onScrollY?: (y: number) => void;
-}) {
-  const idx = columnIndex(result);
-  return (
-    <div
-      className="h-full overflow-auto"
-      onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
-    >
-      <table className="w-full border-separate border-spacing-0 text-sm">
-        <thead
-          className="sticky top-0 z-10 text-left text-xs"
-          style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
-        >
-          <tr>
-            <Th>Time</Th>
-            <Th>Span</Th>
-            <Th>Duration</Th>
-            <Th>Status</Th>
-            <Th>Trace</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {result.rows.map((row, i) => {
-            const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
-            const name = String(row[idx.name] ?? "");
-            const startNS = Number(row[idx.start_time_ns] ?? 0);
-            const durNS = Number(row[idx.duration_ns] ?? 0);
-            // `error` is the synthetic field combining status_code=ERROR with
-            // the presence of an `exception` span event. Always emitted by
-            // the server in raw-rows mode.
-            const errorFlag = Number(row[idx.error] ?? 0);
-            return (
-              <tr
-                key={i}
-                className={clsx(
-                  "hover:bg-[var(--color-card-hover)]",
-                  // Class-based stripe (not inline style) so the
-                  // hover: utility wins by CSS source order. Inline
-                  // background would have higher specificity than the
-                  // hover rule and pin the stripe colour on hover.
-                  i % 2 === 1 && "bg-[var(--color-card-stripe)]",
-                )}
-              >
-                <Td muted>{formatWall(startNS)}</Td>
-                <Td>{name}</Td>
-                <Td className="tabular-nums">{formatDuration(durNS)}</Td>
-                <Td>
-                  {errorFlag ? (
-                    <span style={{ color: "var(--color-error)" }}>error</span>
-                  ) : (
-                    <span style={{ color: "var(--color-ok)" }}>ok</span>
-                  )}
-                </Td>
-                <Td>
-                  {traceID ? (
-                    <span className="inline-flex items-center gap-1">
-                      <Link
-                        to="/traces/$traceId"
-                        params={{ traceId: traceID }}
-                        className="underline font-mono text-xs"
-                        style={{ color: "var(--color-accent)" }}
-                      >
-                        {traceID.slice(0, 8)}
-                      </Link>
-                      <CopyButton value={traceID} label="Copy trace ID" />
-                    </span>
-                  ) : null}
-                </Td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Logs
-// ---------------------------------------------------------------------------
-
-function LogsTable({
-  result,
-  onScrollY,
-}: {
-  result: QueryResult;
-  onScrollY?: (y: number) => void;
-}) {
-  const idx = columnIndex(result);
-  // Track which rows the user has expanded. Keyed by row index into the
-  // current result set — swapping datasets or re-running the query
-  // remounts the component so we don't need a stable row key.
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const toggle = (i: number) =>
     setExpanded((prev) => {
@@ -274,31 +115,23 @@ function LogsTable({
           <tr>
             <Th>{/* chevron column */}</Th>
             <Th>Time</Th>
-            <Th>Severity</Th>
-            <Th>Body</Th>
+            <Th>Signal</Th>
+            <Th>Service</Th>
+            <Th>Name</Th>
+            <Th>Detail</Th>
             <Th>Trace</Th>
           </tr>
         </thead>
         <tbody>
           {result.rows.map((row, i) => {
-            const timeNS = Number(row[idx.time_ns] ?? 0);
-            const severityText = String(row[idx.severity_text] ?? "");
-            const severityNum = Number(row[idx.severity_number] ?? 0);
-            const body = String(row[idx.body] ?? "");
-            const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
-            const attributes = String(row[idx.attributes] ?? "{}");
+            const r = normalizeRow(row, idx, dataset);
             const isOpen = expanded.has(i);
             return (
-              <FragmentRow
+              <EventRow
                 key={i}
+                row={r}
                 isOpen={isOpen}
                 onToggle={() => toggle(i)}
-                time={formatWall(timeNS)}
-                severityText={severityText || severityName(severityNum)}
-                severityColor={severityColor(severityNum)}
-                body={body}
-                traceID={traceID}
-                attributesJson={attributes}
               />
             );
           })}
@@ -308,24 +141,96 @@ function LogsTable({
   );
 }
 
-function FragmentRow({
+// ---------------------------------------------------------------------------
+// Row + helpers
+// ---------------------------------------------------------------------------
+
+interface NormalizedRow {
+  signalType: string; // "span" | "log" | "metric"
+  timeNS: number;
+  service: string;
+  name: string;
+  // Signal-specific detail values
+  durationNS?: number;
+  statusCode?: number;
+  severityNumber?: number;
+  severityText?: string;
+  body?: string;
+  metricKind?: string;
+  value?: number;
+  // Trace/span linkage
+  traceID?: string;
+  spanID?: string;
+  // Raw attributes JSON for the expand panel
+  attributes: string;
+  // For the filter-target in AttributesPanel
+  filterTarget: "/events";
+}
+
+function normalizeRow(
+  row: unknown[],
+  idx: Record<string, number>,
+  dataset: Dataset,
+): NormalizedRow {
+  // Resolve signal_type: present as a column on dataset=events, implied by
+  // the preset otherwise.
+  const signalFromRow =
+    idx.signal_type !== undefined ? String(row[idx.signal_type] ?? "") : "";
+  const signal = signalFromRow || impliedSignal(dataset);
+  const num = (k: string): number | undefined => {
+    if (idx[k] === undefined) return undefined;
+    const v = row[idx[k]];
+    if (v === null || v === undefined) return undefined;
+    return typeof v === "number" ? v : Number(v);
+  };
+  const str = (k: string): string | undefined => {
+    if (idx[k] === undefined) return undefined;
+    const v = row[idx[k]];
+    return v == null ? undefined : String(v);
+  };
+  return {
+    signalType: signal,
+    timeNS:
+      num("time_ns") ??
+      num("start_time_ns") ??
+      0,
+    service: str("service_name") ?? "",
+    name: str("name") ?? "",
+    durationNS: num("duration_ns"),
+    statusCode: num("status_code"),
+    severityNumber: num("severity_number"),
+    severityText: str("severity_text"),
+    body: str("body"),
+    metricKind: str("metric_kind") ?? str("kind"),
+    value: num("value"),
+    traceID: (str("trace_id") ?? "").toLowerCase() || undefined,
+    spanID: (str("span_id") ?? "").toLowerCase() || undefined,
+    attributes: str("attributes") ?? "{}",
+    filterTarget: "/events",
+  };
+}
+
+function impliedSignal(dataset: Dataset): string {
+  switch (dataset) {
+    case "spans":
+      return "span";
+    case "logs":
+      return "log";
+    case "metrics":
+      return "metric";
+    default:
+      return "";
+  }
+}
+
+function EventRow({
+  row,
   isOpen,
   onToggle,
-  time,
-  severityText,
-  severityColor,
-  body,
-  traceID,
-  attributesJson,
 }: {
+  row: NormalizedRow;
   isOpen: boolean;
   onToggle: () => void;
-  time: string;
-  severityText: string;
-  severityColor: string;
-  body: string;
-  traceID: string;
-  attributesJson: string;
 }) {
   return (
     <>
@@ -341,22 +246,30 @@ function FragmentRow({
           )}
         </Td>
         <Td muted className="whitespace-nowrap">
-          {time}
+          {formatWall(row.timeNS)}
         </Td>
-        <Td style={{ color: severityColor }}>{severityText}</Td>
-        <Td className="whitespace-pre-wrap break-all">{body}</Td>
+        <Td>
+          <SignalPill signal={row.signalType} />
+        </Td>
+        <Td>{row.service}</Td>
+        <Td className="break-all">
+          <NameCell row={row} />
+        </Td>
+        <Td className="whitespace-nowrap">
+          <DetailCell row={row} />
+        </Td>
         <Td onClick={(e) => e.stopPropagation()}>
-          {traceID ? (
+          {row.traceID ? (
             <span className="inline-flex items-center gap-1">
               <Link
                 to="/traces/$traceId"
-                params={{ traceId: traceID }}
+                params={{ traceId: row.traceID }}
                 className="underline"
                 style={{ color: "var(--color-accent)" }}
               >
-                {traceID.slice(0, 8)}
+                {row.traceID.slice(0, 8)}
               </Link>
-              <CopyButton value={traceID} label="Copy trace ID" />
+              <CopyButton value={row.traceID} label="Copy trace ID" />
             </span>
           ) : (
             <span style={{ color: "var(--color-ink-muted)" }}>·</span>
@@ -366,7 +279,7 @@ function FragmentRow({
       {isOpen && (
         <tr>
           <td
-            colSpan={5}
+            colSpan={7}
             className="border-b"
             style={{
               background: "var(--color-surface-muted)",
@@ -374,13 +287,78 @@ function FragmentRow({
             }}
           >
             <AttributesPanel
-              attributesJson={attributesJson}
-              filterTarget="/logs"
+              attributesJson={row.attributes}
+              filterTarget={row.filterTarget}
             />
           </td>
         </tr>
       )}
     </>
+  );
+}
+
+function NameCell({ row }: { row: NormalizedRow }) {
+  if (row.signalType === "log") {
+    return <span className="whitespace-pre-wrap">{row.body || row.name || "(no body)"}</span>;
+  }
+  return <span>{row.name}</span>;
+}
+
+function DetailCell({ row }: { row: NormalizedRow }) {
+  if (row.signalType === "span") {
+    const err = row.statusCode === 2;
+    return (
+      <span className="inline-flex items-center gap-2">
+        {row.durationNS !== undefined && (
+          <span className="tabular-nums">{formatDuration(row.durationNS)}</span>
+        )}
+        <span style={{ color: err ? "var(--color-error)" : "var(--color-ok)" }}>
+          {err ? "error" : "ok"}
+        </span>
+      </span>
+    );
+  }
+  if (row.signalType === "log") {
+    const n = row.severityNumber ?? 0;
+    return (
+      <span style={{ color: severityColor(n) }}>
+        {row.severityText || severityName(n)}
+      </span>
+    );
+  }
+  if (row.signalType === "metric") {
+    const parts: string[] = [];
+    if (row.metricKind) parts.push(row.metricKind);
+    if (row.value !== undefined) parts.push(formatMetricValue(row.value));
+    return (
+      <span className="tabular-nums" style={{ color: "var(--color-ink-muted)" }}>
+        {parts.join(" · ")}
+      </span>
+    );
+  }
+  return <span style={{ color: "var(--color-ink-muted)" }}>·</span>;
+}
+
+function SignalPill({ signal }: { signal: string }) {
+  const color =
+    signal === "span"
+      ? "var(--color-accent)"
+      : signal === "log"
+        ? "var(--color-warn, var(--color-ink-muted))"
+        : signal === "metric"
+          ? "var(--color-ok)"
+          : "var(--color-ink-muted)";
+  return (
+    <span
+      className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide"
+      style={{
+        background: "var(--color-surface-muted)",
+        color,
+        border: "1px solid " + color,
+      }}
+    >
+      {signal || "—"}
+    </span>
   );
 }
 
@@ -417,17 +395,26 @@ function severityName(n: number): string {
 
 function severityColor(n: number): string {
   if (n >= 17) return "var(--color-error)";
-  if (n >= 13) return "#b45f06";
-  if (n >= 9) return "var(--color-ink)";
+  if (n >= 13) return "var(--color-warn, var(--color-ink))";
   return "var(--color-ink-muted)";
+}
+
+function formatMetricValue(v: number): string {
+  if (!Number.isFinite(v)) return String(v);
+  return v.toLocaleString();
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="h-full w-full flex items-center justify-center" style={{ color: "var(--color-ink-muted)" }}>
+      {children}
+    </div>
+  );
 }
 
 function Th({ children }: { children?: React.ReactNode }) {
   return (
-    <th
-      className="px-4 py-2 border-b font-medium uppercase tracking-wide"
-      style={{ borderColor: "var(--color-border)" }}
-    >
+    <th className="px-3 py-2 font-semibold text-left border-b" style={{ borderColor: "var(--color-border)" }}>
       {children}
     </th>
   );
@@ -435,32 +422,27 @@ function Th({ children }: { children?: React.ReactNode }) {
 
 function Td({
   children,
+  muted,
   className,
   style,
-  muted,
   onClick,
 }: {
-  children: React.ReactNode;
+  children?: React.ReactNode;
+  muted?: boolean;
   className?: string;
   style?: React.CSSProperties;
-  muted?: boolean;
-  onClick?: React.MouseEventHandler<HTMLTableCellElement>;
+  onClick?: (e: React.MouseEvent) => void;
 }) {
   return (
     <td
-      className={"px-4 py-2 border-b " + (className ?? "")}
+      onClick={onClick}
+      className={clsx("px-3 py-1.5 align-top", className)}
       style={{
-        borderColor: "var(--color-border)",
         color: muted ? "var(--color-ink-muted)" : undefined,
         ...style,
       }}
-      onClick={onClick}
     >
       {children}
     </td>
   );
-}
-
-function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="h-full flex items-center justify-center">{children}</div>;
 }

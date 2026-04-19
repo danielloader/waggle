@@ -20,7 +20,7 @@ func TestValidate_RequiresDatasetAndSelect(t *testing.T) {
 		wantErr string
 	}{
 		{"missing dataset", Query{TimeRange: tr(), Select: []Aggregation{{Op: OpCount}}}, "dataset"},
-		{"invalid dataset", Query{Dataset: "events", TimeRange: tr(), Select: []Aggregation{{Op: OpCount}}}, "dataset"},
+		{"invalid dataset", Query{Dataset: "gibberish", TimeRange: tr(), Select: []Aggregation{{Op: OpCount}}}, "dataset"},
 		{"missing time", Query{Dataset: DatasetSpans, Select: []Aggregation{{Op: OpCount}}}, "time_range"},
 		// "no selects" is now valid — it triggers raw-rows mode. Removed.
 		{"unknown op", Query{Dataset: DatasetSpans, TimeRange: tr(), Select: []Aggregation{{Op: "weird"}}}, "op"},

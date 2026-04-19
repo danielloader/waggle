@@ -99,6 +99,43 @@ func (b *builder) buildRaw() (Compiled, error) {
 // positional output into typed rows.
 func rawColumnsFor(d Dataset) ([]Column, []string) {
 	switch d {
+	case DatasetEvents:
+		// Mixed-signal view. Every row carries signal_type; per-signal
+		// fields are NULL when they don't apply. The UI renders each row
+		// polymorphically based on signal_type.
+		cols := []Column{
+			{Name: "time_ns", Type: "time"},
+			{Name: "signal_type", Type: "string"},
+			{Name: "service_name", Type: "string"},
+			{Name: "name", Type: "string"},
+			{Name: "trace_id", Type: "string"},
+			{Name: "span_id", Type: "string"},
+			{Name: "duration_ns", Type: "int"},
+			{Name: "status_code", Type: "int"},
+			{Name: "severity_number", Type: "int"},
+			{Name: "severity_text", Type: "string"},
+			{Name: "body", Type: "string"},
+			{Name: "metric_kind", Type: "string"},
+			{Name: "value", Type: "float"},
+			{Name: "attributes", Type: "string"},
+		}
+		exprs := []string{
+			"time_ns",
+			"signal_type",
+			"service_name",
+			"name",
+			"hex(trace_id)",
+			"hex(span_id)",
+			"duration_ns",
+			"status_code",
+			"severity_number",
+			"severity_text",
+			"body",
+			"metric_kind",
+			"value",
+			"attributes",
+		}
+		return cols, exprs
 	case DatasetMetrics:
 		cols := []Column{
 			{Name: "time_ns", Type: "time"},
@@ -402,7 +439,7 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 		return resolvedField{SQL: "span_id", Type: "string"}, true
 	case "parent_span_id":
 		return resolvedField{SQL: "parent_span_id", Type: "string"}, true
-	case "meta.signal_type":
+	case "meta.signal_type", "signal_type":
 		return resolvedField{SQL: "signal_type", Type: "string"}, true
 	case "meta.span_kind":
 		return resolvedField{SQL: "span_kind", Type: "string"}, true
@@ -481,7 +518,9 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 }
 
 // signalTypeFilter emits the WHERE prefix that pins queries to their
-// dataset's events rows. Hits idx_events_signal_time.
+// dataset's events rows. Hits idx_events_signal_time. DatasetEvents
+// emits a trivially-true predicate — the builder still needs one WHERE
+// fragment per dataset branch for the "WHERE X AND time_ns >= ?" join.
 func (b *builder) signalTypeFilter() string {
 	switch b.q.Dataset {
 	case DatasetSpans:

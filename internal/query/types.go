@@ -12,15 +12,16 @@ import (
 	"time"
 )
 
-// Dataset selects which table a query runs against. One query targets
-// exactly one signal type — there's no UNION across datasets in the first
-// pass.
+// Dataset selects a preset filter on the unified events table. "spans",
+// "logs", "metrics" pin the query to one signal via a signal_type='…'
+// prefix; "events" runs across every signal with no prefix.
 type Dataset string
 
 const (
 	DatasetSpans   Dataset = "spans"
 	DatasetLogs    Dataset = "logs"
 	DatasetMetrics Dataset = "metrics"
+	DatasetEvents  Dataset = "events"
 )
 
 // Query is the wire-level structured query.
