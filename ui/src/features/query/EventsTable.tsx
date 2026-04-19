@@ -76,11 +76,80 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
     );
   }
 
-  return dataset === "spans" ? (
-    <SpansTable result={result.data!} onScrollY={onScrollY} />
-  ) : (
-    <LogsTable result={result.data!} onScrollY={onScrollY} />
+  if (dataset === "spans") {
+    return <SpansTable result={result.data!} onScrollY={onScrollY} />;
+  }
+  if (dataset === "metrics") {
+    return <MetricsTable result={result.data!} onScrollY={onScrollY} />;
+  }
+  return <LogsTable result={result.data!} onScrollY={onScrollY} />;
+}
+
+// ---------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------
+
+function MetricsTable({
+  result,
+  onScrollY,
+}: {
+  result: QueryResult;
+  onScrollY?: (y: number) => void;
+}) {
+  const idx = columnIndex(result);
+  return (
+    <div
+      className="h-full overflow-auto"
+      onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
+    >
+      <table className="w-full border-separate border-spacing-0 text-sm">
+        <thead
+          className="sticky top-0 z-10 text-left text-xs"
+          style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
+        >
+          <tr>
+            <Th>Time</Th>
+            <Th>Service</Th>
+            <Th>Metric</Th>
+            <Th>Kind</Th>
+            <Th>Value</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.rows.map((row, i) => {
+            const timeNS = Number(row[idx.time_ns] ?? 0);
+            const service = String(row[idx.service_name] ?? "");
+            const name = String(row[idx.name] ?? "");
+            const kind = String(row[idx.kind] ?? "");
+            const value = row[idx.value];
+            return (
+              <tr
+                key={i}
+                className={clsx(
+                  "hover:bg-[var(--color-card-hover)]",
+                  i % 2 === 1 && "bg-[var(--color-card-stripe)]",
+                )}
+              >
+                <Td muted>{formatWall(timeNS)}</Td>
+                <Td>{service}</Td>
+                <Td className="font-mono">{name}</Td>
+                <Td muted>{kind}</Td>
+                <Td className="tabular-nums">{formatMetricValue(value)}</Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
+}
+
+function formatMetricValue(v: unknown): string {
+  if (v === null || v === undefined) return "—";
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  // Large counter values benefit from thousands separators.
+  return n.toLocaleString();
 }
 
 // ---------------------------------------------------------------------------

@@ -24,7 +24,12 @@ export interface SpanOut {
   resource_id: number;
   service_name: string;
   name: string;
-  kind: number;
+  /**
+   * OTel SpanKind enum name, lowercased — "server" | "client" | "internal" |
+   * "producer" | "consumer" | "" (unspecified). Mirrors meta.span_kind but
+   * exposed as a top-level field for convenience.
+   */
+  kind: string;
   start_ns: number;
   end_ns: number;
   duration_ns: number;
