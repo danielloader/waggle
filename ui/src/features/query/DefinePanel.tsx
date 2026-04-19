@@ -22,6 +22,13 @@ interface Props {
   dataset: Dataset;
   search: QuerySearch;
   onChange: (next: QuerySearch) => void;
+  /**
+   * Dataset pill changes go through here, not onChange. Switching
+   * datasets resets the query-shape state (select/where/group_by/…)
+   * that likely references fields from the old dataset; the parent
+   * decides exactly what to keep.
+   */
+  onDatasetChange: (next: Dataset) => void;
   onRun: () => void;
   isRunning?: boolean;
 }
@@ -33,7 +40,7 @@ interface Props {
  * Time range picker sits outside the grid next to the title so it's always
  * visible, and the Run button is right-aligned against the second row.
  */
-export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Props) {
+export function DefinePanel({ dataset, search, onChange, onDatasetChange, onRun, isRunning }: Props) {
   // Any service filter set in WHERE scopes the field autocomplete in the
   // GROUP BY picker / AddFilterButton so we only fetch relevant keys.
   const serviceFilter = search.where.find(
@@ -60,7 +67,7 @@ export function DefinePanel({ dataset, search, onChange, onRun, isRunning }: Pro
           <h1 className="text-lg font-semibold">Query in</h1>
           <DatasetSelect
             value={datasetLabel}
-            onChange={(d) => onChange({ ...search, dataset: d })}
+            onChange={onDatasetChange}
           />
           <span style={{ color: "var(--color-ink-muted)" }}>·</span>
           <ServicePicker

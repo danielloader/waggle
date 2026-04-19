@@ -74,6 +74,31 @@ export function EventsPage() {
   const setSearch = (next: QuerySearch) =>
     navigate({ to: "/events", search: next as unknown as Record<string, unknown> });
 
+  // Switching datasets invalidates most of the query shape — SELECT
+  // items almost always reference fields that only exist on the old
+  // dataset (e.g. MAX(requests.total) on spans yields NULLs; p99
+  // (duration_ns) on metrics references a column metric_events doesn't
+  // have). Same for WHERE and GROUP BY. Reset those; keep the time
+  // controls, refresh cadence, and active tab so the user's window
+  // context carries over.
+  const changeDataset = (next: typeof search.dataset) => {
+    setSearch({
+      dataset: next,
+      range: search.range,
+      from: search.from,
+      to: search.to,
+      granularity: search.granularity,
+      refresh: search.refresh,
+      tab: search.tab,
+      select: [],
+      where: [],
+      group_by: [],
+      order_by: [],
+      having: [],
+      limit: search.limit,
+    });
+  };
+
   useRefreshPersistence(search, setSearch);
 
   const chart = useQuery({
@@ -116,6 +141,7 @@ export function EventsPage() {
           dataset={search.dataset}
           search={search}
           onChange={setSearch}
+          onDatasetChange={changeDataset}
           onRun={() => chart.refetch()}
           isRunning={chart.isFetching}
         />
