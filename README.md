@@ -21,9 +21,9 @@ Local OpenTelemetry viewer inspired by Honeycomb — named for the
   and `metric_events` (Honeycomb-style: the metric's name is an attribute
   field, so `MAX(requests.total)` resolves with plain SQL). WAL mode, FTS5
   for log/span-name search.
-- **Four peer surfaces:** `/traces`, `/logs`, `/metrics`, and `/events`
-  (the general explore page) — each driven by the same Honeycomb-style
-  query builder.
+- **One unified explore page** driven by a Honeycomb-style query
+  builder. Dataset (spans / logs / metrics) is a pill in the URL, so
+  the same filters, group-by, and aggregations apply across signals.
 - **Per-chart controls.** Multi-`SELECT` queries render one chart per
   aggregation, each with its own Edit-chart popover (missing-values
   handling) and SI-suffixed y-axis.
@@ -85,30 +85,51 @@ go tool task build
 ./bin/waggle
 ```
 
+**`go install`** — headless server only (no embedded UI):
+
+```sh
+go install github.com/danielloader/waggle/cmd/waggle@latest
+waggle
+```
+
+The UI assets are built by Vite and embedded into the binary during the
+normal release / `go tool task build` flow. `go install` bypasses that
+step, so the resulting binary serves the OTLP/HTTP ingest endpoints and
+the `/api/*` surface, but `/` returns "UI not built". Handy for
+agent-like deployments where only the ingest + API are needed — and
+quick to bootstrap without Node. For the browser UI, use a release
+archive, Docker, or a full source build.
+
 Once running, open `http://localhost:4318` and point any OTLP/HTTP exporter
 (OpenTelemetry SDK defaults work) at the same URL.
 
 ## Usage
 
-Four peer routes, all driven by the same query builder:
+One explore page drives everything. The sidebar has two entries — the
+explore page and the query history:
 
-- `/traces` — span-scoped view (dataset = `spans`). Trace list, Traces
-  tab showing top-N slowest roots, Explore Data for raw span rows.
-  Clicking a trace-id opens the waterfall.
-- `/logs` — log-scoped view (dataset = `logs`). FTS5-backed text search
-  on log bodies and span names.
-- `/metrics` — metric-scoped view (dataset = `metrics`). The metric's
-  name is an attribute field, so you query it the same way as any other
-  field: type `MAX(requests.total)` or `P99(memory.used_bytes)` in the
-  Select cell. Field autocomplete pulls metric names from the attribute
-  catalog.
-- `/events` — the general explore page. Pick a dataset (spans, logs,
-  or metrics) and drive any structured query from a single surface.
-- `/history` — recent queries, deduplicated. Every successful `/events`
-  query lands in a local `query_history` table keyed by a hash of the
-  AST (time range excluded), so repeats bump a run counter rather than
-  pile up new rows. Clicking an entry rehydrates the URL and re-runs
-  the query against its original time window.
+- **`/events`** is the single explore surface. A dataset pill in the
+  URL picks which signal to query:
+  - `dataset=spans` — trace list, Traces tab for top-N slowest roots,
+    Explore Data for raw span rows. Clicking a trace-id opens the
+    waterfall.
+  - `dataset=logs` — FTS5-backed text search on log bodies and span
+    names, click-to-drill-into attributes pane.
+  - `dataset=metrics` — the metric's name is an attribute field, so
+    `MAX(requests.total)` or `P99(memory.used_bytes)` resolves through
+    the same field picker as any other attribute.
+- **`/history`** — recent queries, deduplicated. Every successful
+  `/events` query lands in a local `query_history` table keyed by a
+  hash of the AST (time range excluded), so repeats bump a run counter
+  rather than pile up new rows. Clicking an entry rehydrates the URL
+  and re-runs the query against its original time window.
+
+The paths `/traces`, `/logs`, and `/metrics` exist as redirects into
+`/events` with the matching `dataset` preset — handy as short entry
+points or legacy links. The specialised trace-waterfall route
+`/traces/$traceId` is the one place where the UI leaves the unified
+page, because the waterfall's two-column layout doesn't fit the
+explore chrome.
 
 Every URL serialises the full query state (filters, group-by, aggregates,
 time range, granularity) so shared links reproduce the view.
