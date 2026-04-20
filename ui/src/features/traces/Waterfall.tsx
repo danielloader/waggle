@@ -1,6 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ChevronDown, ChevronRight, AlertTriangle } from "lucide-react";
+import { AlertTriangle } from "lucide-react";
 import clsx from "clsx";
 import { serviceColor } from "../../lib/colors";
 import { formatDuration } from "../../lib/format";
@@ -72,6 +72,27 @@ export function Waterfall({
     rowVirtualizer.scrollToIndex(idx, { align: "center" });
   }, [scrollToSpanID, rows, rowVirtualizer]);
 
+  // Measured timeline pixel width — drives the label-placement heuristic in
+  // each Row. We need real pixels (not percentages) to decide whether a
+  // duration label will fit inside its bar.
+  const [timelineWidthPx, setTimelineWidthPx] = useState(0);
+  useEffect(() => {
+    const el = parentRef.current;
+    if (!el) return;
+    const update = () => {
+      // Subtract NAME_COL + SERVICE_COL for the two fixed columns and the
+      // 16px total horizontal padding on each row's timeline (px-2). What
+      // remains is the content box where bar percentages are anchored.
+      setTimelineWidthPx(
+        Math.max(0, el.clientWidth - NAME_COL - SERVICE_COL - 16),
+      );
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const traceDurNS = Math.max(1, model.traceEndNS - model.traceStartNS);
 
   return (
@@ -79,7 +100,7 @@ export function Waterfall({
       <TimelineRuler traceDurNS={traceDurNS} />
       <div
         ref={parentRef}
-        className="flex-1 overflow-auto"
+        className="flex-1 overflow-y-auto overflow-x-hidden"
         style={{ contain: "strict" }}
       >
         <div
@@ -98,6 +119,7 @@ export function Waterfall({
                 top={vr.start}
                 traceStartNS={model.traceStartNS}
                 traceDurNS={traceDurNS}
+                timelineWidthPx={timelineWidthPx}
                 isSelected={selectedSpanID === row.span.span_id}
                 isCollapsed={collapsed.has(row.span.span_id)}
                 isHighlighted={
@@ -141,20 +163,22 @@ function TimelineRuler({ traceDurNS }: { traceDurNS: number }) {
       >
         Service Name
       </div>
-      <div className="flex-1 relative px-2 py-1">
-        {ticks.map((t, i) => (
-          <span
-            key={i}
-            className="absolute"
-            style={{
-              left: `${(t / traceDurNS) * 100}%`,
-              top: 6,
-              transform: i === ticks.length - 1 ? "translateX(-100%)" : undefined,
-            }}
-          >
-            {formatDuration(t)}
-          </span>
-        ))}
+      <div className="flex-1 px-2 py-1">
+        <div className="relative w-full h-full">
+          {ticks.map((t, i) => (
+            <span
+              key={i}
+              className="absolute"
+              style={{
+                left: `${(t / traceDurNS) * 100}%`,
+                top: 0,
+                transform: i === ticks.length - 1 ? "translateX(-100%)" : undefined,
+              }}
+            >
+              {formatDuration(t)}
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -176,6 +200,7 @@ interface RowProps {
   top: number;
   traceStartNS: number;
   traceDurNS: number;
+  timelineWidthPx: number;
   isSelected: boolean;
   isCollapsed: boolean;
   isHighlighted: boolean;
@@ -190,6 +215,7 @@ function Row({
   top,
   traceStartNS,
   traceDurNS,
+  timelineWidthPx,
   isSelected,
   isCollapsed,
   isHighlighted,
@@ -213,6 +239,52 @@ function Row({
   const labelBg = isError
     ? "color-mix(in srgb, var(--color-error) 45%, white)"
     : `color-mix(in srgb, ${color} 55%, white)`;
+
+  // Honeycomb-style label placement. If the bar is wide enough, the label
+  // sits inside at the leading edge (pill-style, background-tinted). If
+  // not, it floats to the side with more room — right of the bar by
+  // default, flipping to the left when the bar is butted against the
+  // timeline's right edge (e.g. late-starting spans near trace end).
+  const labelText = formatDuration(row.durationNS);
+  // 11px tabular-nums is ≈6.5px per char; +8 for the padding/margin budget.
+  const labelWidthPx = labelText.length * 6.5 + 8;
+  const barWidthPx = (widthPct / 100) * timelineWidthPx;
+  const leadingSpacePx = (leftPct / 100) * timelineWidthPx;
+  const trailingSpacePx = Math.max(
+    0,
+    ((100 - leftPct - widthPct) / 100) * timelineWidthPx,
+  );
+  // Before the parent has been measured (first paint), keep the label
+  // inside to avoid a visible jump when the width arrives.
+  const labelSide: "inside" | "right" | "left" =
+    timelineWidthPx === 0 || barWidthPx >= labelWidthPx + 4
+      ? "inside"
+      : trailingSpacePx >= labelWidthPx + 4
+        ? "right"
+        : leadingSpacePx >= labelWidthPx + 4
+          ? "left"
+          : "inside";
+  const labelStyle: CSSProperties =
+    labelSide === "inside"
+      ? {
+          left: `${leftPct}%`,
+          marginLeft: 2,
+          padding: "0 4px",
+          color: "var(--color-ink)",
+          background: labelBg,
+          borderRadius: 2,
+        }
+      : labelSide === "right"
+        ? {
+            left: `${leftPct + widthPct}%`,
+            marginLeft: 4,
+            color: "var(--color-ink-muted)",
+          }
+        : {
+            right: `${100 - leftPct}%`,
+            marginRight: 4,
+            color: "var(--color-ink-muted)",
+          };
 
   return (
     <div
@@ -243,17 +315,26 @@ function Row({
         {row.childCount > 0 ? (
           <button
             type="button"
-            className="p-0.5 rounded hover:bg-border/50"
+            className="text-[10px] tabular-nums leading-none px-1 py-0.5 rounded shrink-0 hover:bg-border/50"
+            style={{
+              minWidth: 18,
+              textAlign: "center",
+              background: isCollapsed
+                ? "var(--color-accent)"
+                : "var(--color-surface-muted)",
+              color: isCollapsed
+                ? "white"
+                : "var(--color-ink-muted)",
+              border: "1px solid var(--color-border)",
+            }}
             onClick={(e) => {
               e.stopPropagation();
               onToggleCollapse(row.span.span_id);
             }}
+            aria-expanded={!isCollapsed}
+            aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${row.childCount} child span${row.childCount === 1 ? "" : "s"}`}
           >
-            {isCollapsed ? (
-              <ChevronRight className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
+            {row.childCount}
           </button>
         ) : (
           <span className="w-4" />
@@ -286,7 +367,12 @@ function Row({
       >
         {row.span.service_name}
       </div>
-      <div className="flex-1 relative h-full">
+      <div className="flex-1 h-full px-2">
+        {/* Percentages on the absolute children below are anchored to this
+            inner div's width. Keeping the `px-2` on the outer wrapper
+            means percentages land inside the padded area instead of
+            spilling to the timeline column's border edges. */}
+        <div className="relative w-full h-full">
         {/* Dashed skew extension — drawn under the solid bar. */}
         {row.hasSkew && (
           <div
@@ -313,22 +399,15 @@ function Row({
             background: barColor,
           }}
         />
-        {/* Duration label at the bar's leading edge. Backed by a lighter
-            shade of the same bar colour so it reads as a native extension
-            of the bar rather than a pasted-on pill. */}
+        {/* Duration label. Position chosen per-row: inside when the bar is
+            wide enough (pill-styled), otherwise floated to whichever side
+            has more room so short spans don't end up with labels clipped
+            past the timeline's right edge. */}
         <span
           className="absolute text-[11px] tabular-nums pointer-events-none whitespace-nowrap"
-          style={{
-            left: `${leftPct}%`,
-            top: 5,
-            marginLeft: 2,
-            padding: "0 4px",
-            color: "var(--color-ink)",
-            background: labelBg,
-            borderRadius: 2,
-          }}
+          style={{ top: 5, ...labelStyle }}
         >
-          {formatDuration(row.durationNS)}
+          {labelText}
         </span>
         {/* Span event ticks — positioned on the shared trace timeline, so
             they may fall outside the bar's pixel extent if the SDK
@@ -355,6 +434,7 @@ function Row({
             />
           );
         })}
+        </div>
       </div>
     </div>
   );
