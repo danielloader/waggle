@@ -1,10 +1,10 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import clsx from "clsx";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { X } from "lucide-react";
 import type {
   Dataset,
+  QueryColumn,
   QueryResult,
   QuerySearch,
 } from "../../lib/query";
@@ -13,21 +13,33 @@ import { formatDuration } from "../../lib/format";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { AttributesPanel } from "../../components/ui/AttributesPanel";
 
+/** Selection shape lifted to the page. Pairs the clicked row with the
+ *  result's column schema so a detail pane rendered at page level can
+ *  decode the row without re-fetching. */
+export interface SelectedRow {
+  row: unknown[];
+  columns: QueryColumn[];
+}
+
 interface Props {
   dataset: Dataset;
   search: QuerySearch;
   /** Reports the scroll container's vertical offset on every scroll event so
    *  the page can collapse the query/chart header once the user drills in. */
   onScrollY?: (y: number) => void;
+  /** Currently-selected row (driven by the page). When this matches a row
+   *  in the current result, that row is highlighted. */
+  selected?: SelectedRow | null;
+  /** Fires when the user clicks a row. Passing `null` clears. */
+  onSelect?: (next: SelectedRow | null) => void;
 }
 
 /**
  * Events table. Sits below the chart and shows matching rows for the current
- * dataset + WHERE + time range. Rows render based on the dataset's row
- * shape — span rows show duration + status + trace link; log rows show
- * severity + body; metric rows show the folded attributes JSON.
+ * dataset + WHERE + time range. Backed by the same /api/query endpoint the
+ * chart uses; empty SELECT switches that endpoint into raw-rows mode.
  */
-export function EventsTable({ dataset, search, onScrollY }: Props) {
+export function EventsTable({ dataset, search, onScrollY, selected, onSelect }: Props) {
   const result = useQuery({
     queryKey: [
       "events",
@@ -73,62 +85,100 @@ export function EventsTable({ dataset, search, onScrollY }: Props) {
     );
   }
 
-  return <UnifiedTable dataset={dataset} result={result.data!} onScrollY={onScrollY} />;
+  if (dataset === "spans") {
+    return <SpansTable result={result.data!} onScrollY={onScrollY} />;
+  }
+  if (dataset === "metrics") {
+    return (
+      <MetricsTable
+        result={result.data!}
+        onScrollY={onScrollY}
+        selected={selected ?? null}
+        onSelect={onSelect}
+      />
+    );
+  }
+  return (
+    <LogsTable
+      result={result.data!}
+      onScrollY={onScrollY}
+      selected={selected ?? null}
+      onSelect={onSelect}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Unified renderer
+// Spans (no side pane — the trace-detail view owns that pattern)
 // ---------------------------------------------------------------------------
 
-function UnifiedTable({
-  dataset,
+function SpansTable({
   result,
   onScrollY,
 }: {
-  dataset: Dataset;
   result: QueryResult;
   onScrollY?: (y: number) => void;
 }) {
   const idx = columnIndex(result);
-  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
-  const toggle = (i: number) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      next.has(i) ? next.delete(i) : next.add(i);
-      return next;
-    });
-
   return (
     <div
-      className="h-full overflow-auto font-mono text-xs leading-5"
+      className="h-full overflow-auto"
       onScroll={onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined}
     >
-      <table className="w-full border-separate border-spacing-0">
+      <table className="w-full border-separate border-spacing-0 text-sm">
         <thead
-          className="sticky top-0 z-10 text-[10px] uppercase tracking-wide"
+          className="sticky top-0 z-10 text-left text-xs"
           style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
         >
           <tr>
-            <Th>{/* chevron column */}</Th>
             <Th>Time</Th>
-            <Th>Signal</Th>
-            <Th>Service</Th>
-            <Th>Name</Th>
-            <Th>Detail</Th>
+            <Th>Span</Th>
+            <Th>Duration</Th>
+            <Th>Status</Th>
             <Th>Trace</Th>
           </tr>
         </thead>
         <tbody>
           {result.rows.map((row, i) => {
-            const r = normalizeRow(row, idx, dataset);
-            const isOpen = expanded.has(i);
+            const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
+            const name = String(row[idx.name] ?? "");
+            const startNS = Number(row[idx.start_time_ns] ?? 0);
+            const durNS = Number(row[idx.duration_ns] ?? 0);
+            const errorFlag = Number(row[idx.error] ?? 0);
             return (
-              <EventRow
+              <tr
                 key={i}
-                row={r}
-                isOpen={isOpen}
-                onToggle={() => toggle(i)}
-              />
+                className={clsx(
+                  "hover:bg-[var(--color-card-hover)]",
+                  i % 2 === 1 && "bg-[var(--color-card-stripe)]",
+                )}
+              >
+                <Td muted>{formatWall(startNS)}</Td>
+                <Td>{name}</Td>
+                <Td className="tabular-nums">{formatDuration(durNS)}</Td>
+                <Td>
+                  {errorFlag ? (
+                    <span style={{ color: "var(--color-error)" }}>error</span>
+                  ) : (
+                    <span style={{ color: "var(--color-ok)" }}>ok</span>
+                  )}
+                </Td>
+                <Td>
+                  {traceID ? (
+                    <span className="inline-flex items-center gap-1">
+                      <Link
+                        to="/traces/$traceId"
+                        params={{ traceId: traceID }}
+                        className="underline font-mono text-xs"
+                        style={{ color: "var(--color-accent)" }}
+                      >
+                        {traceID.slice(0, 8)}
+                      </Link>
+                      <CopyButton value={traceID} label="Copy trace ID" />
+                    </span>
+                  ) : null}
+                </Td>
+              </tr>
             );
           })}
         </tbody>
@@ -138,267 +188,369 @@ function UnifiedTable({
 }
 
 // ---------------------------------------------------------------------------
-// Row + helpers
+// Logs — row click opens a right-hand detail pane (not inline).
 // ---------------------------------------------------------------------------
 
-interface NormalizedRow {
-  signalType: string; // "span" | "log" | "metric"
-  timeNS: number;
-  service: string;
-  name: string;
-  // Signal-specific detail values
-  durationNS?: number;
-  statusCode?: number;
-  severityNumber?: number;
-  severityText?: string;
-  body?: string;
-  metricKind?: string;
-  value?: number;
-  // Trace/span linkage
-  traceID?: string;
-  spanID?: string;
-  // Raw attributes JSON for the expand panel
-  attributes: string;
-  // For the filter-target in AttributesPanel
-  filterTarget: "/events";
-}
-
-function normalizeRow(
-  row: unknown[],
-  idx: Record<string, number>,
-  dataset: Dataset,
-): NormalizedRow {
-  // Resolve signal_type: present as a column on dataset=events, implied by
-  // the preset otherwise.
-  const signalFromRow =
-    idx.signal_type !== undefined ? String(row[idx.signal_type] ?? "") : "";
-  const signal = signalFromRow || impliedSignal(dataset);
-  const num = (k: string): number | undefined => {
-    if (idx[k] === undefined) return undefined;
-    const v = row[idx[k]];
-    if (v === null || v === undefined) return undefined;
-    return typeof v === "number" ? v : Number(v);
-  };
-  const str = (k: string): string | undefined => {
-    if (idx[k] === undefined) return undefined;
-    const v = row[idx[k]];
-    return v == null ? undefined : String(v);
-  };
-  return {
-    signalType: signal,
-    timeNS:
-      num("time_ns") ??
-      num("start_time_ns") ??
-      0,
-    service: str("service_name") ?? "",
-    name: str("name") ?? "",
-    durationNS: num("duration_ns"),
-    statusCode: num("status_code"),
-    severityNumber: num("severity_number"),
-    severityText: str("severity_text"),
-    body: str("body"),
-    metricKind: undefined,
-    value: undefined,
-    traceID: (str("trace_id") ?? "").toLowerCase() || undefined,
-    spanID: (str("span_id") ?? "").toLowerCase() || undefined,
-    attributes: str("attributes") ?? "{}",
-    filterTarget: "/events",
-  };
-}
-
-function impliedSignal(dataset: Dataset): string {
-  switch (dataset) {
-    case "spans":
-      return "span";
-    case "logs":
-      return "log";
-    case "metrics":
-      return "metric";
-    default:
-      return "";
-  }
-}
-
-function EventRow({
-  row,
-  isOpen,
-  onToggle,
+function LogsTable({
+  result,
+  onScrollY,
+  selected,
+  onSelect,
 }: {
-  row: NormalizedRow;
-  isOpen: boolean;
-  onToggle: () => void;
+  result: QueryResult;
+  onScrollY?: (y: number) => void;
+  selected: SelectedRow | null;
+  onSelect?: (next: SelectedRow | null) => void;
 }) {
+  const idx = columnIndex(result);
+  const selectedRef = selected?.row;
+
+  const setSelected = (row: unknown[] | null) => {
+    if (!onSelect) return;
+    onSelect(row ? { row, columns: result.columns } : null);
+  };
+
   return (
-    <>
-      <tr
-        className="align-top cursor-pointer hover:bg-[var(--color-card-hover)]"
-        onClick={onToggle}
-      >
-        <Td className="w-6">
-          {isOpen ? (
-            <ChevronDown className="w-3.5 h-3.5" />
-          ) : (
-            <ChevronRight className="w-3.5 h-3.5" />
-          )}
-        </Td>
-        <Td muted className="whitespace-nowrap">
-          {formatWall(row.timeNS)}
-        </Td>
-        <Td>
-          <SignalPill signal={row.signalType} />
-        </Td>
-        <Td>{row.service}</Td>
-        <Td className="break-all">
-          <NameCell row={row} />
-        </Td>
-        <Td className="whitespace-nowrap">
-          <DetailCell row={row} />
-        </Td>
-        <Td onClick={(e) => e.stopPropagation()}>
-          {row.traceID ? (
-            <span className="inline-flex items-center gap-1">
-              <Link
-                to="/traces/$traceId"
-                params={{ traceId: row.traceID }}
-                className="underline"
-                style={{ color: "var(--color-accent)" }}
+    <div
+      className="h-full overflow-auto font-mono text-xs leading-5"
+      onScroll={
+        onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined
+      }
+    >
+      <table className="w-full border-separate border-spacing-0">
+        <thead
+          className="sticky top-0 z-10 text-[10px] uppercase tracking-wide"
+          style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
+        >
+          <tr>
+            <Th>Time</Th>
+            <Th>Severity</Th>
+            <Th>Body</Th>
+            <Th>Trace</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.rows.map((row, i) => {
+            const timeNS = Number(row[idx.time_ns] ?? 0);
+            const severityText = String(row[idx.severity_text] ?? "");
+            const severityNum = Number(row[idx.severity_number] ?? 0);
+            const body = String(row[idx.body] ?? "");
+            const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
+            const spanID = String(row[idx.span_id] ?? "").toLowerCase();
+            const isActive = selectedRef === row;
+            return (
+              <tr
+                key={i}
+                className={clsx(
+                  "align-top cursor-pointer hover:bg-[var(--color-card-hover)]",
+                  !isActive && i % 2 === 1 && "bg-[var(--color-card-stripe)]",
+                )}
+                style={
+                  isActive
+                    ? {
+                        background:
+                          "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                      }
+                    : undefined
+                }
+                onClick={() => setSelected(isActive ? null : row)}
               >
-                {row.traceID.slice(0, 8)}
-              </Link>
-              <CopyButton value={row.traceID} label="Copy trace ID" />
-            </span>
-          ) : (
-            <span style={{ color: "var(--color-ink-muted)" }}>·</span>
-          )}
-        </Td>
-      </tr>
-      {isOpen && (
-        <tr>
-          <td
-            colSpan={7}
-            className="border-b"
-            style={{
-              background: "var(--color-surface-muted)",
-              borderColor: "var(--color-border)",
-            }}
-          >
-            <AttributesPanel
-              attributesJson={row.attributes}
-              filterTarget={row.filterTarget}
-            />
-          </td>
-        </tr>
-      )}
-    </>
+                <Td muted className="whitespace-nowrap">
+                  {formatWall(timeNS)}
+                </Td>
+                <Td style={{ color: severityColor(severityNum) }}>
+                  {severityText || severityName(severityNum)}
+                </Td>
+                <Td className="whitespace-pre-wrap break-all">{body}</Td>
+                <Td onClick={(e) => e.stopPropagation()}>
+                  {traceID ? (
+                    <span className="inline-flex items-center gap-1">
+                      <Link
+                        to="/traces/$traceId"
+                        params={{ traceId: traceID }}
+                        search={spanID ? { span: spanID } : {}}
+                        className="underline"
+                        style={{ color: "var(--color-accent)" }}
+                      >
+                        {traceID.slice(0, 8)}
+                      </Link>
+                      <CopyButton value={traceID} label="Copy trace ID" />
+                    </span>
+                  ) : (
+                    <span style={{ color: "var(--color-ink-muted)" }}>·</span>
+                  )}
+                </Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
-function NameCell({ row }: { row: NormalizedRow }) {
-  if (row.signalType === "log") {
-    return <span className="whitespace-pre-wrap">{row.body || row.name || "(no body)"}</span>;
-  }
-  if (row.signalType === "metric") {
-    // Metric rows don't have a `name` column — the metrics observed at
-    // this (time, label-set) tuple are attribute keys with numeric
-    // values (e.g. attributes["requests.total"] = 1423). Show the first
-    // few.
-    const mets = metricsFromAttrs(row.attributes);
-    if (mets.length === 0) return <span style={{ color: "var(--color-ink-muted)" }}>(no metrics)</span>;
-    return (
-      <span className="font-mono">
-        {mets.slice(0, 3).map((m, i) => (
-          <span key={m.name}>
-            {i > 0 && <span style={{ color: "var(--color-ink-muted)" }}>, </span>}
-            {m.name}
-          </span>
-        ))}
-        {mets.length > 3 && (
-          <span style={{ color: "var(--color-ink-muted)" }}> +{mets.length - 3}</span>
-        )}
-      </span>
-    );
-  }
-  return <span>{row.name}</span>;
-}
-
-function DetailCell({ row }: { row: NormalizedRow }) {
-  if (row.signalType === "span") {
-    const err = row.statusCode === 2;
-    return (
-      <span className="inline-flex items-center gap-2">
-        {row.durationNS !== undefined && (
-          <span className="tabular-nums">{formatDuration(row.durationNS)}</span>
-        )}
-        <span style={{ color: err ? "var(--color-error)" : "var(--color-ok)" }}>
-          {err ? "error" : "ok"}
-        </span>
-      </span>
-    );
-  }
-  if (row.signalType === "log") {
-    const n = row.severityNumber ?? 0;
-    return (
-      <span style={{ color: severityColor(n) }}>
-        {row.severityText || severityName(n)}
-      </span>
-    );
-  }
-  if (row.signalType === "metric") {
-    const mets = metricsFromAttrs(row.attributes);
-    if (mets.length === 0) return <span style={{ color: "var(--color-ink-muted)" }}>·</span>;
-    // Show the first metric's value — the rest are visible when the row
-    // is expanded via the AttributesPanel.
-    return (
-      <span className="tabular-nums" style={{ color: "var(--color-ink-muted)" }}>
-        {formatMetricValue(mets[0].value)}
-      </span>
-    );
-  }
-  return <span style={{ color: "var(--color-ink-muted)" }}>·</span>;
-}
-
-// metricsFromAttrs extracts the numeric attribute keys from a metric
-// event's attributes JSON. Under the folded model the metric's name IS
-// the key and its value is a number; label attributes are typically
-// strings. Non-numeric keys (labels, meta.*) are filtered out.
-function metricsFromAttrs(json: string): { name: string; value: number }[] {
-  if (!json || json === "{}") return [];
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(json) as Record<string, unknown>;
-  } catch {
-    return [];
-  }
-  const out: { name: string; value: number }[] = [];
-  for (const [k, v] of Object.entries(parsed)) {
-    if (k.startsWith("meta.")) continue;
-    if (typeof v === "number") out.push({ name: k, value: v });
-  }
-  // Stable ordering: metric names sort alphabetically for a consistent UI.
-  out.sort((a, b) => a.name.localeCompare(b.name));
-  return out;
-}
-
-function SignalPill({ signal }: { signal: string }) {
-  const color =
-    signal === "span"
-      ? "var(--color-accent)"
-      : signal === "log"
-        ? "var(--color-warn, var(--color-ink-muted))"
-        : signal === "metric"
-          ? "var(--color-ok)"
-          : "var(--color-ink-muted)";
+/**
+ * LogDetailPane renders a single log row's facts + attributes. Exported
+ * so pages can render it as a full-height sibling of the main content
+ * column (rather than cramped inside the table's flex row).
+ */
+export function LogDetailPane({
+  columns,
+  row,
+  onClose,
+}: {
+  columns: QueryColumn[];
+  row: unknown[];
+  onClose: () => void;
+}) {
+  const idx = columnIndexFromColumns(columns);
+  const timeNS = Number(row[idx.time_ns] ?? 0);
+  const severityText = String(row[idx.severity_text] ?? "");
+  const severityNum = Number(row[idx.severity_number] ?? 0);
+  const body = String(row[idx.body] ?? "");
+  const service = String(row[idx.service_name] ?? "");
+  const traceID = String(row[idx.trace_id] ?? "").toLowerCase();
+  const spanID = String(row[idx.span_id] ?? "").toLowerCase();
+  const attributes = String(row[idx.attributes] ?? "{}");
   return (
-    <span
-      className="inline-block text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wide"
-      style={{
-        background: "var(--color-surface-muted)",
-        color,
-        border: "1px solid " + color,
-      }}
+    <PaneShell onClose={onClose} title="Log record">
+      <div
+        className="px-4 py-3 border-b flex flex-col gap-1.5"
+        style={{
+          borderColor: "var(--color-border)",
+          background: "var(--color-surface)",
+        }}
+      >
+        <div
+          className="text-xs flex items-center gap-2"
+          style={{ color: "var(--color-ink-muted)" }}
+        >
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+            style={{
+              color: severityColor(severityNum),
+              background:
+                "color-mix(in srgb, " +
+                severityColor(severityNum) +
+                " 12%, transparent)",
+            }}
+          >
+            {severityText || severityName(severityNum)}
+          </span>
+          <span>{service}</span>
+          <span>· {formatWall(timeNS)}</span>
+        </div>
+        <div className="text-sm font-mono break-words whitespace-pre-wrap">
+          {body}
+        </div>
+        {traceID ? (
+          <div
+            className="text-[11px] font-mono flex items-center gap-1 flex-wrap"
+            style={{ color: "var(--color-ink-muted)" }}
+          >
+            <span>trace_id:</span>
+            <Link
+              to="/traces/$traceId"
+              params={{ traceId: traceID }}
+              search={spanID ? { span: spanID } : {}}
+              className="underline truncate"
+              style={{ color: "var(--color-accent)" }}
+            >
+              {traceID}
+            </Link>
+            <CopyButton value={traceID} label="Copy trace ID" />
+          </div>
+        ) : null}
+      </div>
+      <div className="flex-1 overflow-auto">
+        <AttributesPanel attributesJson={attributes} filterTarget="/logs" />
+      </div>
+    </PaneShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Metrics — same side-pane pattern. Columns come from
+// rawColumnsFor(metrics): time_ns, service_name, name, kind, value,
+// attributes.
+// ---------------------------------------------------------------------------
+
+function MetricsTable({
+  result,
+  onScrollY,
+  selected,
+  onSelect,
+}: {
+  result: QueryResult;
+  onScrollY?: (y: number) => void;
+  selected: SelectedRow | null;
+  onSelect?: (next: SelectedRow | null) => void;
+}) {
+  const idx = columnIndex(result);
+  const selectedRef = selected?.row;
+  const setSelected = (row: unknown[] | null) => {
+    if (!onSelect) return;
+    onSelect(row ? { row, columns: result.columns } : null);
+  };
+  return (
+    <div
+      className="h-full overflow-auto text-sm"
+      onScroll={
+        onScrollY ? (e) => onScrollY(e.currentTarget.scrollTop) : undefined
+      }
     >
-      {signal || "—"}
-    </span>
+      <table className="w-full border-separate border-spacing-0">
+        <thead
+          className="sticky top-0 z-10 text-left text-xs"
+          style={{ background: "var(--color-surface)", color: "var(--color-ink-muted)" }}
+        >
+          <tr>
+            <Th>Time</Th>
+            <Th>Service</Th>
+            <Th>Metric</Th>
+            <Th>Kind</Th>
+            <Th>Value</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {result.rows.map((row, i) => {
+            const timeNS = Number(row[idx.time_ns] ?? 0);
+            const service = String(row[idx.service_name] ?? "");
+            const name = String(row[idx.name] ?? "");
+            const kind = String(row[idx.kind] ?? "");
+            const value = Number(row[idx.value] ?? 0);
+            const isActive = selectedRef === row;
+            return (
+              <tr
+                key={i}
+                className={clsx(
+                  "cursor-pointer hover:bg-[var(--color-card-hover)]",
+                  !isActive && i % 2 === 1 && "bg-[var(--color-card-stripe)]",
+                )}
+                style={
+                  isActive
+                    ? {
+                        background:
+                          "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                      }
+                    : undefined
+                }
+                onClick={() => setSelected(isActive ? null : row)}
+              >
+                <Td muted className="whitespace-nowrap font-mono text-xs">
+                  {formatWall(timeNS)}
+                </Td>
+                <Td>{service}</Td>
+                <Td className="font-mono">{name}</Td>
+                <Td muted>{kind}</Td>
+                <Td className="tabular-nums font-mono text-xs">
+                  {formatMetricValue(value)}
+                </Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * MetricDetailPane — exported twin of LogDetailPane for /metrics. The
+ * page renders this as a full-height sibling next to the main content.
+ */
+export function MetricDetailPane({
+  columns,
+  row,
+  onClose,
+}: {
+  columns: QueryColumn[];
+  row: unknown[];
+  onClose: () => void;
+}) {
+  const idx = columnIndexFromColumns(columns);
+  const timeNS = Number(row[idx.time_ns] ?? 0);
+  const service = String(row[idx.service_name] ?? "");
+  const name = String(row[idx.name] ?? "");
+  const kind = String(row[idx.kind] ?? "");
+  const value = Number(row[idx.value] ?? 0);
+  const attributes = String(row[idx.attributes] ?? "{}");
+  return (
+    <PaneShell onClose={onClose} title="Metric point">
+      <div
+        className="px-4 py-3 border-b flex flex-col gap-1.5"
+        style={{
+          borderColor: "var(--color-border)",
+          background: "var(--color-surface)",
+        }}
+      >
+        <div
+          className="text-xs flex items-center gap-2"
+          style={{ color: "var(--color-ink-muted)" }}
+        >
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase"
+            style={{
+              background: "var(--color-card-stripe)",
+              color: "var(--color-ink-muted)",
+            }}
+          >
+            {kind}
+          </span>
+          <span>{service}</span>
+          <span>· {formatWall(timeNS)}</span>
+        </div>
+        <div className="text-base font-mono break-all">{name}</div>
+        <div
+          className="text-xl font-mono tabular-nums"
+          style={{ color: "var(--color-ink)" }}
+        >
+          {formatMetricValue(value)}
+        </div>
+      </div>
+      <div className="flex-1 overflow-auto">
+        <AttributesPanel attributesJson={attributes} filterTarget="/metrics" />
+      </div>
+    </PaneShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Shared pane chrome — pages render the selected row's detail here as a
+// full-height sibling of the main content column.
+// ---------------------------------------------------------------------------
+
+function PaneShell({
+  onClose,
+  title,
+  children,
+}: {
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      <div
+        className="flex items-center justify-between px-3 py-2 border-b text-xs uppercase tracking-wide"
+        style={{
+          borderColor: "var(--color-border)",
+          color: "var(--color-ink-muted)",
+        }}
+      >
+        <span>{title}</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="p-1 rounded hover:bg-[var(--color-card-hover)]"
+          title="Close"
+          aria-label="Close detail pane"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -407,8 +559,12 @@ function SignalPill({ signal }: { signal: string }) {
 // ---------------------------------------------------------------------------
 
 function columnIndex(result: QueryResult): Record<string, number> {
+  return columnIndexFromColumns(result.columns);
+}
+
+function columnIndexFromColumns(columns: QueryColumn[]): Record<string, number> {
   const map: Record<string, number> = {};
-  result.columns.forEach((c, i) => {
+  columns.forEach((c, i) => {
     map[c.name] = i;
   });
   return map;
@@ -435,26 +591,23 @@ function severityName(n: number): string {
 
 function severityColor(n: number): string {
   if (n >= 17) return "var(--color-error)";
-  if (n >= 13) return "var(--color-warn, var(--color-ink))";
+  if (n >= 13) return "#b45f06";
+  if (n >= 9) return "var(--color-ink)";
   return "var(--color-ink-muted)";
 }
 
 function formatMetricValue(v: number): string {
   if (!Number.isFinite(v)) return String(v);
-  return v.toLocaleString();
-}
-
-function Centered({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="h-full w-full flex items-center justify-center" style={{ color: "var(--color-ink-muted)" }}>
-      {children}
-    </div>
-  );
+  if (Number.isInteger(v)) return v.toLocaleString();
+  return v.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
 function Th({ children }: { children?: React.ReactNode }) {
   return (
-    <th className="px-3 py-2 font-semibold text-left border-b" style={{ borderColor: "var(--color-border)" }}>
+    <th
+      className="px-4 py-2 border-b font-medium uppercase tracking-wide"
+      style={{ borderColor: "var(--color-border)" }}
+    >
       {children}
     </th>
   );
@@ -462,27 +615,32 @@ function Th({ children }: { children?: React.ReactNode }) {
 
 function Td({
   children,
-  muted,
   className,
   style,
+  muted,
   onClick,
 }: {
-  children?: React.ReactNode;
-  muted?: boolean;
+  children: React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
-  onClick?: (e: React.MouseEvent) => void;
+  muted?: boolean;
+  onClick?: React.MouseEventHandler<HTMLTableCellElement>;
 }) {
   return (
     <td
-      onClick={onClick}
-      className={clsx("px-3 py-1.5 align-top", className)}
+      className={"px-4 py-2 border-b " + (className ?? "")}
       style={{
+        borderColor: "var(--color-border)",
         color: muted ? "var(--color-ink-muted)" : undefined,
         ...style,
       }}
+      onClick={onClick}
     >
       {children}
     </td>
   );
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return <div className="h-full flex items-center justify-center">{children}</div>;
 }
