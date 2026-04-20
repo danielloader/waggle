@@ -41,7 +41,22 @@ func main() {
 	writer := ingest.NewWriter(st, log, ingest.WriterConfig{})
 	writer.Start(ctx)
 
-	handler := ingest.NewHandler(writer, log)
+	tee, err := ingest.NewTee(ingest.TeeConfig{
+		Path:     cfg.TeePath,
+		Services: cfg.TeeServices,
+		MinSev:   cfg.TeeMinSev,
+		Format:   cfg.TeeFormat,
+		Color:    cfg.TeeColor,
+	})
+	if err != nil {
+		log.Error("failed to open tee", "err", err)
+		os.Exit(1)
+	}
+	if tee != nil {
+		log.Info("tee enabled", "path", cfg.TeePath, "services", cfg.TeeServices, "min_severity", cfg.TeeMinSev, "format", cfg.TeeFormat)
+	}
+
+	handler := ingest.NewHandler(writer, log).WithTee(tee)
 	router := api.NewRouter(st, log)
 	srv := server.New(cfg, log, st, handler, router)
 
@@ -70,6 +85,9 @@ func main() {
 	}
 	if err := writer.Stop(shutdownCtx); err != nil {
 		log.Error("writer stop", "err", err)
+	}
+	if err := tee.Close(); err != nil {
+		log.Warn("tee close", "err", err)
 	}
 }
 
