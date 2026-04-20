@@ -224,6 +224,20 @@ type QueryResult struct {
 	GroupKeys []string      `json:"group_keys,omitempty"`
 }
 
+// QueryHistoryEntry is one dedup'd row in the query_history table — the
+// user has run this exact query AST `RunCount` times between FirstRunNS
+// and LastRunNS. `QueryJSON` is the canonical AST the UI rehydrates a
+// URL from; `DisplayText` is the one-glance summary for list views.
+type QueryHistoryEntry struct {
+	ID          int64  `json:"id"`
+	Dataset     string `json:"dataset"`
+	QueryJSON   string `json:"query_json"`
+	DisplayText string `json:"display_text"`
+	RunCount    int64  `json:"run_count"`
+	FirstRunNS  int64  `json:"first_run_ns"`
+	LastRunNS   int64  `json:"last_run_ns"`
+}
+
 type LogOut struct {
 	LogID          int64  `json:"log_id"`
 	TimeNS         int64  `json:"time_ns"`

@@ -3,6 +3,7 @@ import { Link, Outlet, useLocation } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
+  History,
   PanelLeftClose,
   PanelLeft,
 } from "lucide-react";
@@ -113,6 +114,12 @@ export function RootLayout() {
             "Events",
             <Activity />,
             pathname === "/" || pathname.startsWith("/events") || pathname === "/traces" || pathname === "/logs" || pathname === "/metrics",
+          )}
+          {navItem(
+            "/history",
+            "History",
+            <History />,
+            pathname.startsWith("/history"),
           )}
         </nav>
         <div

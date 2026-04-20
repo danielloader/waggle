@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -31,6 +32,7 @@ func (rt *Router) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/span-names", rt.listSpanNames)
 	mux.HandleFunc("GET /api/logs/search", rt.searchLogs)
 	mux.HandleFunc("POST /api/query", rt.runQuery)
+	mux.HandleFunc("GET /api/history", rt.listHistory)
 	mux.HandleFunc("POST /api/clear", rt.clear)
 }
 
@@ -55,7 +57,44 @@ func (rt *Router) runQuery(w http.ResponseWriter, r *http.Request) {
 		rt.writeError(w, err)
 		return
 	}
+	// Record the run in query_history (best-effort — don't fail the user
+	// query on a history bookkeeping error). Skip raw-rows mode; a bare
+	// "browse the table" isn't something the user wants back in their
+	// recent-queries list.
+	if len(q.Select) > 0 {
+		rt.recordHistory(r.Context(), &q)
+	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (rt *Router) recordHistory(ctx context.Context, q *query.Query) {
+	hash, err := query.HashQuery(q)
+	if err != nil {
+		rt.log.Debug("history hash failed", "err", err)
+		return
+	}
+	raw, err := json.Marshal(q)
+	if err != nil {
+		rt.log.Debug("history marshal failed", "err", err)
+		return
+	}
+	display := query.FormatDisplay(q)
+	if err := rt.store.RecordQueryRun(ctx, string(q.Dataset), string(raw), display, hash); err != nil {
+		rt.log.Debug("history write failed", "err", err)
+	}
+}
+
+func (rt *Router) listHistory(w http.ResponseWriter, r *http.Request) {
+	limit := parseInt(r.URL.Query().Get("limit"), 100)
+	entries, err := rt.store.ListQueryHistory(r.Context(), limit)
+	if err != nil {
+		rt.writeError(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []store.QueryHistoryEntry{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
 func (rt *Router) listServices(w http.ResponseWriter, r *http.Request) {

@@ -132,4 +132,20 @@ export const api = {
       `/api/logs/search?${params.toString()}`,
       signal,
     ),
+
+  listHistory: (limit: number, signal?: AbortSignal) =>
+    getJSON<{ entries: QueryHistoryEntry[] }>(
+      `/api/history?limit=${limit}`,
+      signal,
+    ),
 };
+
+export interface QueryHistoryEntry {
+  id: number;
+  dataset: string;
+  query_json: string;
+  display_text: string;
+  run_count: number;
+  first_run_ns: number;
+  last_run_ns: number;
+}
