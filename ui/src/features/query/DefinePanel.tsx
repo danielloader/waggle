@@ -95,7 +95,8 @@ export function DefinePanel({ dataset, search, onChange, onDatasetChange, onRun,
         <button
           type="button"
           onClick={onRun}
-          className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-white z-10"
+          disabled={isRunning}
+          className="absolute top-2 right-2 flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium text-white z-10 disabled:opacity-60 disabled:cursor-not-allowed"
           style={{ background: "var(--color-accent)" }}
         >
           {isRunning ? <RotateCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}

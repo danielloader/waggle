@@ -5,7 +5,8 @@ import { serviceColor } from "../../lib/colors";
 
 interface Props {
   dataset: Dataset;
-  search: QuerySearch;
+  querySearch: QuerySearch;
+  runCount: number;
 }
 
 /**
@@ -15,11 +16,11 @@ interface Props {
  * request — same SELECT/WHERE as the chart but with bucket_ms omitted, so
  * each group tuple collapses to a single row.
  */
-export function OverviewTab({ dataset, search }: Props) {
+export function OverviewTab({ dataset, querySearch, runCount }: Props) {
   const overview = useQuery({
-    queryKey: ["overview", dataset, search],
+    queryKey: ["overview", dataset, querySearch, runCount],
     queryFn: ({ signal }) =>
-      runQuery(buildOverviewQuery(dataset, search), signal),
+      runQuery(buildOverviewQuery(dataset, querySearch), signal),
     refetchInterval: 10_000,
   });
 

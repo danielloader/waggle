@@ -8,7 +8,14 @@ type TabID = "overview" | "traces" | "explore";
 
 interface Props {
   dataset: Dataset;
+  /** URL-driven search — used only for tab routing state, never for queries. */
   search: QuerySearch;
+  /** The last-committed query params (set when the user clicks Run). All
+   *  tab queries execute against this, not the live edit state. */
+  querySearch: QuerySearch;
+  /** Increments on every Run click, forcing a refetch even when params
+   *  are unchanged since the last run. */
+  runCount: number;
   onTabChange: (tab: TabID) => void;
   /** Optional slot for a logs-only FTS search input rendered next to tabs. */
   rightSlot?: React.ReactNode;
@@ -41,6 +48,8 @@ const TABS: Tab[] = [
 export function ResultTabs({
   dataset,
   search,
+  querySearch,
+  runCount,
   onTabChange,
   rightSlot,
   onExploreScrollY,
@@ -95,12 +104,13 @@ export function ResultTabs({
         {rightSlot ? <div className="py-1">{rightSlot}</div> : null}
       </div>
       <div className="flex-1 overflow-hidden">
-        {active === "overview" && <OverviewTab dataset={dataset} search={search} />}
-        {active === "traces" && <TracesTab search={search} />}
+        {active === "overview" && <OverviewTab dataset={dataset} querySearch={querySearch} runCount={runCount} />}
+        {active === "traces" && <TracesTab querySearch={querySearch} runCount={runCount} />}
         {active === "explore" && (
           <EventsTable
             dataset={dataset}
-            search={search}
+            querySearch={querySearch}
+            runCount={runCount}
             onScrollY={onExploreScrollY}
             selected={selectedRow ?? null}
             onSelect={onSelectRow}
