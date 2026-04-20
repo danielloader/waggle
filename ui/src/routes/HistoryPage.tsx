@@ -98,7 +98,7 @@ function HistoryRow({
       <button
         type="button"
         onClick={onClick}
-        className="w-full text-left rounded-md border px-4 py-3 hover:bg-[var(--color-card-hover)] flex items-start gap-4"
+        className="w-full text-left rounded-md border px-4 py-3 cursor-pointer hover:bg-[var(--color-card-hover)] flex items-start gap-4"
         style={{
           borderColor: "var(--color-border)",
           background: "var(--color-card)",
