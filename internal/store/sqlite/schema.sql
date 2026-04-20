@@ -253,3 +253,25 @@ CREATE TABLE IF NOT EXISTS attribute_values (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_attrvals_lookup ON attribute_values(signal_type, service_name, key, count DESC);
+
+-- =========================================================================
+-- Query history — one row per distinct query AST the user has run, with
+-- run-count + last-run-time rolled up so repeats update the existing row
+-- instead of piling on new ones. The `hash` is a stable content hash of
+-- `query_json` so the UNIQUE key dedupes "same query" regardless of
+-- wall-clock submission time. `display_text` is a pre-rendered one-glance
+-- summary ("SELECT COUNT WHERE … GROUP BY …") so the list view doesn't
+-- need to rehydrate + format on every render.
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS query_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    dataset       TEXT NOT NULL,
+    hash          BLOB NOT NULL UNIQUE,
+    query_json    TEXT NOT NULL,
+    display_text  TEXT NOT NULL,
+    run_count     INTEGER NOT NULL DEFAULT 1,
+    first_run_ns  INTEGER NOT NULL,
+    last_run_ns   INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_query_history_last ON query_history(last_run_ns DESC);

@@ -62,6 +62,19 @@ type Store interface {
 	// post-scan transform.
 	RunQuery(ctx context.Context, sql string, args []any, columns []QueryColumn, hasBucket bool, groupKeys []string, rates []QueryRateSpec) (QueryResult, error)
 
+	// RecordQueryRun upserts a row in query_history keyed by the AST's
+	// content hash: first insert stamps first_run_ns/last_run_ns = now and
+	// run_count = 1; subsequent runs of the same AST update last_run_ns
+	// and increment run_count. DisplayText is the pre-rendered list-view
+	// summary ("SELECT COUNT WHERE … GROUP BY …"). Errors are fatal to the
+	// caller only if it wants them to be — the query itself has already
+	// succeeded by the time this fires.
+	RecordQueryRun(ctx context.Context, dataset, queryJSON, displayText string, hash []byte) error
+	// ListQueryHistory returns rows ordered by last_run_ns DESC, capped at
+	// `limit`. No cursor pagination yet — the set is bounded by the prune
+	// cap in RecordQueryRun.
+	ListQueryHistory(ctx context.Context, limit int) ([]QueryHistoryEntry, error)
+
 	Retain(ctx context.Context, olderThanNS int64) error
 	Clear(ctx context.Context) error
 

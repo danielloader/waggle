@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danielloader/waggle/internal/store"
 )
@@ -1202,6 +1203,67 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// Cap on query_history rows kept before prune-on-insert. 500 is generous
+// for a single-user dev tool — every list view only hits last_run_ns DESC
+// so the tail is cheap to drop.
+const queryHistoryCap = 500
+
+// RecordQueryRun upserts a query_history row keyed by the content hash.
+// First run inserts with run_count = 1; subsequent runs update
+// last_run_ns and increment run_count. When the table crosses
+// queryHistoryCap rows, the oldest entries by last_run_ns are trimmed.
+func (s *Store) RecordQueryRun(ctx context.Context, dataset, queryJSON, displayText string, hash []byte) error {
+	now := time.Now().UnixNano()
+	// SQLite's ON CONFLICT/UPSERT needs the unique index on hash, which
+	// schema.sql sets via the UNIQUE constraint on the column.
+	const upsert = `INSERT INTO query_history
+			(dataset, hash, query_json, display_text, run_count, first_run_ns, last_run_ns)
+			VALUES (?, ?, ?, ?, 1, ?, ?)
+		ON CONFLICT(hash) DO UPDATE SET
+			run_count = run_count + 1,
+			last_run_ns = excluded.last_run_ns,
+			-- Dataset/display_text/query_json can drift if the formatter
+			-- changes between runs; keep the latest.
+			dataset = excluded.dataset,
+			display_text = excluded.display_text,
+			query_json = excluded.query_json`
+	if _, err := s.writer.ExecContext(ctx, upsert, dataset, hash, queryJSON, displayText, now, now); err != nil {
+		return fmt.Errorf("record query history: %w", err)
+	}
+	// Prune to cap. Cheap: bounded by queryHistoryCap + insert rate.
+	const prune = `DELETE FROM query_history WHERE id IN (
+		SELECT id FROM query_history ORDER BY last_run_ns DESC LIMIT -1 OFFSET ?
+	)`
+	if _, err := s.writer.ExecContext(ctx, prune, queryHistoryCap); err != nil {
+		return fmt.Errorf("prune query history: %w", err)
+	}
+	return nil
+}
+
+// ListQueryHistory returns rows ordered by last_run_ns DESC, capped at limit.
+func (s *Store) ListQueryHistory(ctx context.Context, limit int) ([]store.QueryHistoryEntry, error) {
+	if limit <= 0 || limit > queryHistoryCap {
+		limit = 100
+	}
+	const q = `SELECT id, dataset, query_json, display_text, run_count, first_run_ns, last_run_ns
+		FROM query_history ORDER BY last_run_ns DESC LIMIT ?`
+	rows, err := s.reader.QueryContext(ctx, q, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.QueryHistoryEntry
+	for rows.Next() {
+		var e store.QueryHistoryEntry
+		if err := rows.Scan(&e.ID, &e.Dataset, &e.QueryJSON, &e.DisplayText,
+			&e.RunCount, &e.FirstRunNS, &e.LastRunNS); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func nullBytes(b []byte) any {

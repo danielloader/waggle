@@ -7,6 +7,7 @@ import {
 import { z } from "zod";
 import { RootLayout } from "./routes/root";
 import { EventsPage } from "./routes/EventsPage";
+import { HistoryPage } from "./routes/HistoryPage";
 import { TraceView } from "./features/traces/TraceView";
 import { querySearchSchema } from "./lib/query";
 
@@ -57,6 +58,13 @@ const metricsRedirect = createRoute({
   component: () => <Navigate to="/events" search={{ dataset: "metrics" }} replace />,
 });
 
+// Query history — dedup'd list of recent queries, rehydrate + re-run.
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/history",
+  component: HistoryPage,
+});
+
 // Trace-detail waterfall — specialised view, kept outside the unified page.
 const traceDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -75,6 +83,7 @@ const routeTree = rootRoute.addChildren([
   tracesRedirect,
   logsRedirect,
   metricsRedirect,
+  historyRoute,
   traceDetailRoute,
 ]);
 

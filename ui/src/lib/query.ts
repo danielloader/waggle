@@ -555,3 +555,27 @@ export function summarizeOrderBy(o: Order[]): string {
   if (o.length === 0) return "None";
   return o.map((x) => `${x.field} ${x.dir ?? "desc"}`).join(", ");
 }
+
+/**
+ * Rebuild a QuerySearch URL shape from a stored Query AST (from
+ * /api/history). Re-runs use the original absolute time window; users
+ * re-preset by clicking the Last-1h pill. Dataset/bucket_ms/group_by
+ * round-trip exactly; tab defaults to "overview" (we don't persist the
+ * active tab in history). Returns a partial suitable for TanStack
+ * Router's search param.
+ */
+export function queryToUrlSearch(q: Query): Partial<QuerySearch> {
+  const fromMs = q.time_range?.from ? new Date(q.time_range.from).getTime() : undefined;
+  const toMs = q.time_range?.to ? new Date(q.time_range.to).getTime() : undefined;
+  return {
+    dataset: q.dataset,
+    from: fromMs,
+    to: toMs,
+    select: q.select ?? [],
+    where: q.where ?? [],
+    group_by: q.group_by ?? [],
+    order_by: q.order_by ?? [],
+    having: q.having ?? [],
+    ...(q.limit !== undefined ? { limit: q.limit } : {}),
+  };
+}
