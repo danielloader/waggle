@@ -107,7 +107,11 @@ func (w *Writer) loop(ctx context.Context) {
 		if eventCount == 0 && len(pending.Resources) == 0 && len(pending.Scopes) == 0 {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// 30s covers the worst-case commit: a WAL autocheckpoint firing
+		// mid-batch under read pressure, plus a larger-than-usual insert.
+		// 10s was too tight — we saw ctx cancellations cascade whenever a
+		// single batch hit that blip.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := w.store.WriteBatch(ctx, pending); err != nil {
 			w.log.Error("writeBatch failed", "err", err, "events", eventCount)

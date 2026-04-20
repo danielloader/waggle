@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Pause,
@@ -8,6 +8,11 @@ import {
   Braces,
   Copy,
   Check,
+  ChevronUp,
+  ChevronDown,
+  X,
+  Search,
+  Filter,
 } from "lucide-react";
 import clsx from "clsx";
 import type { QueryResult, QuerySearch } from "../../lib/query";
@@ -34,6 +39,26 @@ export function TailTab({ querySearch, runCount }: Props) {
   const [wrap, setWrap] = useState(true);
   const [showAttrs, setShowAttrs] = useState(true);
   const [copied, setCopied] = useState(false);
+  // less-style command prompt at the bottom of the pane. Only one of the
+  // two prompts is visible at a time (search `/` and filter `&` are modal
+  // in less, same here), but both patterns persist when the prompt closes
+  // so the user can flip between them without losing state.
+  const [promptMode, setPromptMode] = useState<"search" | "filter" | null>(
+    null,
+  );
+  const [searchPattern, setSearchPattern] = useState("");
+  const [searchUseRegex, setSearchUseRegex] = useState(false);
+  const [currentMatch, setCurrentMatch] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  // Filter mode (`&pattern` in less) hides non-matching lines. Negate
+  // flips the test — less spells this `&!pattern`, we have a `!` button
+  // to avoid confusing `!` in legitimate regex with the negation prefix.
+  const [filterPattern, setFilterPattern] = useState("");
+  const [filterUseRegex, setFilterUseRegex] = useState(false);
+  const [filterNegate, setFilterNegate] = useState(false);
+  const filterInputRef = useRef<HTMLInputElement>(null);
+  const searchOpen = promptMode === "search";
+  const filterOpen = promptMode === "filter";
 
   const result = useQuery({
     queryKey: [
@@ -99,11 +124,14 @@ export function TailTab({ querySearch, runCount }: Props) {
     setFollow(true);
   };
 
-  // Copy the whole visible buffer as plain text — format mirrors what the
-  // user sees (time, severity, service, body, then logfmt-style attrs) but
-  // stripped of ANSI escapes so the paste target gets a clean feed.
+  // Copy the currently visible buffer as plain text — so if a filter is
+  // active, only the filtered lines land on the clipboard. Format mirrors
+  // what the user sees (time, severity, service, body, then logfmt-style
+  // attrs) with ANSI escapes stripped.
   const copyBuffer = async () => {
-    const text = lines.map((ln) => serializeLine(ln, showAttrs)).join("\n");
+    const text = filteredLines
+      .map((ln) => serializeLine(ln, showAttrs))
+      .join("\n");
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -115,6 +143,202 @@ export function TailTab({ querySearch, runCount }: Props) {
     }
   };
 
+  // Regex-compile attempts — the UI distinguishes "no match" from "invalid
+  // pattern" so the user can tell why `score=0.9[` returned nothing. One
+  // per prompt, since search and filter have independent regex toggles.
+  const searchRegexError = useMemo(
+    () => regexCompileError(searchPattern, searchUseRegex),
+    [searchPattern, searchUseRegex],
+  );
+  const filterRegexError = useMemo(
+    () => regexCompileError(filterPattern, filterUseRegex),
+    [filterPattern, filterUseRegex],
+  );
+
+  // Filter (`&pattern` in less) narrows the visible buffer to lines where
+  // the pattern matches body, any attribute key, or any attribute value.
+  // Negation flips the predicate. If the pattern is invalid (regex parse
+  // failed), we fall through to showing all lines — that way the feed
+  // doesn't vanish while the user is mid-edit on a regex.
+  const filteredLines = useMemo(() => {
+    if (!filterPattern || filterRegexError) return lines;
+    const caseSensitive = /[A-Z]/.test(filterPattern);
+    const finder = buildFinder(filterPattern, filterUseRegex, caseSensitive);
+    if (!finder) return lines;
+    return lines.filter((ln) => {
+      const hit = lineHasHit(ln, finder);
+      return filterNegate ? !hit : hit;
+    });
+  }, [lines, filterPattern, filterUseRegex, filterNegate, filterRegexError]);
+
+  // Search (`/pattern` in less) highlights hits within the *currently
+  // visible* buffer — so /-searching after &-filtering is natural (search
+  // within the filtered slice). Matches cover body + attribute keys +
+  // stringified attribute values.
+  const matches = useMemo(() => {
+    if (!searchPattern || searchRegexError) return [] as SearchMatch[];
+    const caseSensitive = /[A-Z]/.test(searchPattern);
+    const finder = buildFinder(searchPattern, searchUseRegex, caseSensitive);
+    if (!finder) return [];
+    const out: SearchMatch[] = [];
+    for (let li = 0; li < filteredLines.length; li++) {
+      const ln = filteredLines[li];
+      for (const m of finder(stripAnsi(ln.body))) {
+        out.push({
+          lineIdx: li,
+          loc: { kind: "body", start: m.start, end: m.end },
+        });
+      }
+      for (let ai = 0; ai < ln.attrs.length; ai++) {
+        const attr = ln.attrs[ai];
+        for (const m of finder(attr.key)) {
+          out.push({
+            lineIdx: li,
+            loc: { kind: "attrKey", attrIdx: ai, start: m.start, end: m.end },
+          });
+        }
+        const valStr = formatAttrValue(attr);
+        for (const m of finder(valStr)) {
+          out.push({
+            lineIdx: li,
+            loc: { kind: "attrValue", attrIdx: ai, start: m.start, end: m.end },
+          });
+        }
+      }
+    }
+    return out;
+  }, [filteredLines, searchPattern, searchUseRegex, searchRegexError]);
+
+  const matchesByLine = useMemo(() => {
+    const by = new Map<number, { match: SearchMatch; matchIdx: number }[]>();
+    matches.forEach((m, idx) => {
+      const arr = by.get(m.lineIdx) ?? [];
+      arr.push({ match: m, matchIdx: idx });
+      by.set(m.lineIdx, arr);
+    });
+    return by;
+  }, [matches]);
+
+  // Keep `currentMatch` in range as the match list churns (new rows arriving
+  // via polling, pattern edits, etc.). Snapping to 0 is the least surprising
+  // behaviour — matches the order less shows hits.
+  useEffect(() => {
+    if (currentMatch >= matches.length) setCurrentMatch(0);
+  }, [matches.length, currentMatch]);
+
+  // Scroll the active match into the middle of the pane. Searching always
+  // pauses follow so we don't fight auto-scroll on the next poll.
+  useEffect(() => {
+    if (!searchOpen || matches.length === 0) return;
+    const m = matches[currentMatch];
+    if (!m) return;
+    const el = scrollRef.current?.querySelector(
+      `[data-line-idx="${m.lineIdx}"]`,
+    ) as HTMLElement | null;
+    el?.scrollIntoView({ block: "center" });
+  }, [currentMatch, matches, searchOpen]);
+
+  const openSearch = () => {
+    setPromptMode("search");
+    setFollow(false);
+    stickToBottom.current = false;
+    queueMicrotask(() => searchInputRef.current?.focus());
+  };
+  const closeSearch = () => {
+    setPromptMode(null);
+    // Clear the search pattern on close — tail is a live view, stale
+    // highlight markers persisting after Esc feels wrong. Filter pattern
+    // is deliberately *not* cleared on close (see below).
+    setSearchPattern("");
+    setCurrentMatch(0);
+  };
+  const openFilter = () => {
+    setPromptMode("filter");
+    setFollow(false);
+    stickToBottom.current = false;
+    queueMicrotask(() => filterInputRef.current?.focus());
+  };
+  const closeFilter = () => {
+    setPromptMode(null);
+    // Filter pattern persists when the prompt closes — the user can Esc
+    // out of the bar to see the filtered view without the prompt
+    // chrome, and reopen with `&` to edit. To clear, open and erase.
+  };
+  const nextMatch = () => {
+    if (matches.length === 0) return;
+    setCurrentMatch((c) => (c + 1) % matches.length);
+  };
+  const prevMatch = () => {
+    if (matches.length === 0) return;
+    setCurrentMatch((c) => (c - 1 + matches.length) % matches.length);
+  };
+
+  // Global key handler: bindings land on the window when the Tail tab is
+  // mounted. Anything typed into an input is left alone — we don't want to
+  // hijack the Define panel or either prompt's own input, which has its
+  // own handlers for Enter / Esc.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const ae = document.activeElement as HTMLElement | null;
+      const tag = ae?.tagName;
+      const typingInField =
+        tag === "INPUT" || tag === "TEXTAREA" || ae?.isContentEditable;
+      if (typingInField) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      switch (e.key) {
+        case "/":
+          e.preventDefault();
+          openSearch();
+          return;
+        case "&":
+          e.preventDefault();
+          openFilter();
+          return;
+        case "Escape":
+          if (promptMode !== null) {
+            e.preventDefault();
+            if (promptMode === "search") closeSearch();
+            else closeFilter();
+          }
+          return;
+        case "n":
+          if (matches.length > 0) {
+            e.preventDefault();
+            nextMatch();
+          }
+          return;
+        case "N":
+          if (matches.length > 0) {
+            e.preventDefault();
+            prevMatch();
+          }
+          return;
+        case "F":
+          e.preventDefault();
+          if (follow) setFollow(false);
+          else jumpToBottom();
+          return;
+        case "G":
+          e.preventDefault();
+          jumpToBottom();
+          return;
+        case "g": {
+          e.preventDefault();
+          const el = scrollRef.current;
+          if (el) {
+            el.scrollTop = 0;
+            stickToBottom.current = false;
+            setFollow(false);
+          }
+          return;
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [promptMode, matches.length, follow]);
+
   return (
     <div
       className="h-full flex flex-col"
@@ -125,7 +349,8 @@ export function TailTab({ querySearch, runCount }: Props) {
         wrap={wrap}
         showAttrs={showAttrs}
         copied={copied}
-        lineCount={lines.length}
+        lineCount={filteredLines.length}
+        totalLineCount={lines.length}
         error={result.error}
         onToggleFollow={() => {
           if (follow) setFollow(false);
@@ -142,21 +367,422 @@ export function TailTab({ querySearch, runCount }: Props) {
         className="flex-1 overflow-auto font-mono text-[12px] leading-[1.45] px-3 py-2"
         style={{ scrollbarColor: "#333 #0b0b0b" }}
       >
-        {lines.length === 0 ? (
+        {filteredLines.length === 0 ? (
           <div style={{ color: "#777" }}>
             {result.isPending
               ? "Waiting for logs..."
-              : "No logs in the current time range. Widen the range or adjust filters."}
+              : lines.length === 0
+                ? "No logs in the current time range. Widen the range or adjust filters."
+                : `No lines match filter "${filterPattern}". Press & to edit.`}
           </div>
         ) : (
           <div className={clsx("flex flex-col", wrap ? "" : "w-max min-w-full")}>
-            {lines.map((ln) => (
-              <TailRow key={ln.key} line={ln} wrap={wrap} showAttrs={showAttrs} />
+            {filteredLines.map((ln, idx) => (
+              <TailRow
+                key={ln.key}
+                line={ln}
+                lineIdx={idx}
+                wrap={wrap}
+                showAttrs={showAttrs}
+                lineMatches={matchesByLine.get(idx) ?? EMPTY_LINE_MATCHES}
+                activeMatchIdx={currentMatch}
+                searching={searchOpen && searchPattern.length > 0}
+              />
             ))}
           </div>
         )}
       </div>
+      <TailCommandBar
+        mode={promptMode}
+        search={{
+          pattern: searchPattern,
+          useRegex: searchUseRegex,
+          regexError: searchRegexError,
+          inputRef: searchInputRef,
+          matchCount: matches.length,
+          currentMatch,
+          onPatternChange: setSearchPattern,
+          onToggleRegex: () => setSearchUseRegex((r) => !r),
+          onNext: nextMatch,
+          onPrev: prevMatch,
+          onClose: closeSearch,
+        }}
+        filter={{
+          pattern: filterPattern,
+          useRegex: filterUseRegex,
+          negate: filterNegate,
+          regexError: filterRegexError,
+          inputRef: filterInputRef,
+          filteredCount: filteredLines.length,
+          totalCount: lines.length,
+          onPatternChange: setFilterPattern,
+          onToggleRegex: () => setFilterUseRegex((r) => !r),
+          onToggleNegate: () => setFilterNegate((n) => !n),
+          onClose: closeFilter,
+        }}
+        filterActive={filterPattern.length > 0 && !filterRegexError}
+        filterPattern={filterPattern}
+        filterNegate={filterNegate}
+      />
     </div>
+  );
+}
+
+// Reused across every non-matching row so we don't allocate fresh empty
+// arrays on every render (1000 rows × every keystroke adds up).
+const EMPTY_LINE_MATCHES: { match: SearchMatch; matchIdx: number }[] = [];
+
+type MatchLocation =
+  | { kind: "body"; start: number; end: number }
+  | { kind: "attrKey"; attrIdx: number; start: number; end: number }
+  | { kind: "attrValue"; attrIdx: number; start: number; end: number };
+
+interface SearchMatch {
+  lineIdx: number;
+  loc: MatchLocation;
+}
+
+function regexCompileError(pattern: string, useRegex: boolean): string | null {
+  if (!useRegex || !pattern) return null;
+  try {
+    new RegExp(pattern);
+    return null;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
+// Used by filter mode — does *any* of the line's searchable text hit?
+// Body, attribute keys, attribute values all count. Used with
+// `buildFinder` so the same smart-case + regex rules apply as search.
+function lineHasHit(
+  ln: TailLine,
+  finder: (text: string) => { start: number; end: number }[],
+): boolean {
+  if (finder(stripAnsi(ln.body)).length > 0) return true;
+  for (const a of ln.attrs) {
+    if (finder(a.key).length > 0) return true;
+    if (finder(formatAttrValue(a)).length > 0) return true;
+  }
+  return false;
+}
+
+function buildFinder(
+  pattern: string,
+  useRegex: boolean,
+  caseSensitive: boolean,
+): ((text: string) => { start: number; end: number }[]) | null {
+  if (!pattern) return null;
+  if (useRegex) {
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, caseSensitive ? "g" : "gi");
+    } catch {
+      return null;
+    }
+    return (text: string) => {
+      const out: { start: number; end: number }[] = [];
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      // Cap iterations so a pathological /(.*)*/ can't freeze the tab.
+      for (let iter = 0; iter < 10_000; iter++) {
+        m = re.exec(text);
+        if (m === null) break;
+        if (m[0].length === 0) {
+          re.lastIndex++;
+          continue;
+        }
+        out.push({ start: m.index, end: m.index + m[0].length });
+      }
+      return out;
+    };
+  }
+  const pat = caseSensitive ? pattern : pattern.toLowerCase();
+  return (text: string) => {
+    const hay = caseSensitive ? text : text.toLowerCase();
+    const out: { start: number; end: number }[] = [];
+    let from = 0;
+    while (from <= hay.length - pat.length) {
+      const idx = hay.indexOf(pat, from);
+      if (idx === -1) break;
+      out.push({ start: idx, end: idx + pat.length });
+      from = Math.max(idx + pat.length, idx + 1);
+    }
+    return out;
+  };
+}
+
+interface SearchPromptProps {
+  pattern: string;
+  useRegex: boolean;
+  regexError: string | null;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  matchCount: number;
+  currentMatch: number;
+  onPatternChange: (s: string) => void;
+  onToggleRegex: () => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+}
+
+interface FilterPromptProps {
+  pattern: string;
+  useRegex: boolean;
+  negate: boolean;
+  regexError: string | null;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+  filteredCount: number;
+  totalCount: number;
+  onPatternChange: (s: string) => void;
+  onToggleRegex: () => void;
+  onToggleNegate: () => void;
+  onClose: () => void;
+}
+
+// Bottom command bar — modelled on less's `/`-prompt and idle status line.
+// Three states: search prompt, filter prompt, or idle key-hint strip.
+// Search (`/`) and filter (`&`) are modal in less too, so only one is
+// rendered at a time. When a filter is active but its prompt is closed,
+// the idle bar shows a compact summary so the user knows the buffer is
+// narrowed.
+function TailCommandBar({
+  mode,
+  search,
+  filter,
+  filterActive,
+  filterPattern,
+  filterNegate,
+}: {
+  mode: "search" | "filter" | null;
+  search: SearchPromptProps;
+  filter: FilterPromptProps;
+  filterActive: boolean;
+  filterPattern: string;
+  filterNegate: boolean;
+}) {
+  if (mode === "search") return <SearchPrompt {...search} />;
+  if (mode === "filter") return <FilterPrompt {...filter} />;
+  return (
+    <div
+      className="flex items-center gap-3 px-3 py-1.5 border-t text-[11px] font-mono"
+      style={{ background: "#111", borderColor: "#222", color: "#666" }}
+    >
+      <span style={{ color: "#888" }}>:</span>
+      <KeyHint k="/" label="search" />
+      <KeyHint k="&" label="filter" />
+      <KeyHint k="n" label="next" />
+      <KeyHint k="N" label="prev" />
+      <KeyHint k="F" label="follow" />
+      <KeyHint k="g" label="top" />
+      <KeyHint k="G" label="bottom" />
+      {filterActive ? (
+        <span className="ml-auto" style={{ color: "#12b2a6" }}>
+          <Filter className="w-3 h-3 inline -mt-0.5" />{" "}
+          <span style={{ color: "#bbb" }}>
+            {filterNegate ? "!" : ""}
+            {filterPattern}
+          </span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function SearchPrompt({
+  pattern,
+  useRegex,
+  regexError,
+  inputRef,
+  matchCount,
+  currentMatch,
+  onPatternChange,
+  onToggleRegex,
+  onNext,
+  onPrev,
+  onClose,
+}: SearchPromptProps) {
+  const counter = regexError
+    ? "invalid regex"
+    : matchCount === 0
+      ? pattern
+        ? "no match"
+        : "—"
+      : `${currentMatch + 1} / ${matchCount}`;
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 border-t text-[11px] font-mono"
+      style={{ background: "#111", borderColor: "#222", color: "#bbb" }}
+    >
+      <Search className="w-3 h-3" style={{ color: "#888" }} />
+      <span style={{ color: "#12b2a6" }}>/</span>
+      <input
+        ref={inputRef}
+        value={pattern}
+        onChange={(e) => onPatternChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            if (e.shiftKey) onPrev();
+            else onNext();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        autoFocus
+        spellCheck={false}
+        placeholder={
+          useRegex
+            ? "regex (smart case: lowercase = insensitive)"
+            : "literal (smart case: lowercase = insensitive)"
+        }
+        className="flex-1 bg-transparent outline-none"
+        style={{ color: "#e5e5e5" }}
+      />
+      <ToggleChip label=".*" active={useRegex} title="Toggle regex mode" onClick={onToggleRegex} />
+      <span
+        style={{
+          color: regexError ? "#ef5350" : matchCount === 0 ? "#777" : "#bbb",
+        }}
+        title={regexError ?? undefined}
+      >
+        {counter}
+      </span>
+      <IconBtn onClick={onPrev} title="Previous match (Shift+Enter, N)">
+        <ChevronUp className="w-3 h-3" />
+      </IconBtn>
+      <IconBtn onClick={onNext} title="Next match (Enter, n)">
+        <ChevronDown className="w-3 h-3" />
+      </IconBtn>
+      <IconBtn onClick={onClose} title="Close search (Esc)">
+        <X className="w-3 h-3" />
+      </IconBtn>
+    </div>
+  );
+}
+
+function FilterPrompt({
+  pattern,
+  useRegex,
+  negate,
+  regexError,
+  inputRef,
+  filteredCount,
+  totalCount,
+  onPatternChange,
+  onToggleRegex,
+  onToggleNegate,
+  onClose,
+}: FilterPromptProps) {
+  const status = regexError
+    ? "invalid regex"
+    : pattern
+      ? `${filteredCount.toLocaleString()} / ${totalCount.toLocaleString()}`
+      : `${totalCount.toLocaleString()} lines`;
+  return (
+    <div
+      className="flex items-center gap-2 px-3 py-1.5 border-t text-[11px] font-mono"
+      style={{ background: "#111", borderColor: "#222", color: "#bbb" }}
+    >
+      <Filter className="w-3 h-3" style={{ color: "#888" }} />
+      <span style={{ color: "#12b2a6" }}>&amp;{negate ? "!" : ""}</span>
+      <input
+        ref={inputRef}
+        value={pattern}
+        onChange={(e) => onPatternChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        autoFocus
+        spellCheck={false}
+        placeholder={
+          negate
+            ? "pattern to EXCLUDE (lines not matching)"
+            : "pattern to include (smart case: lowercase = insensitive)"
+        }
+        className="flex-1 bg-transparent outline-none"
+        style={{ color: "#e5e5e5" }}
+      />
+      <ToggleChip label="!" active={negate} title="Invert — show lines that DON'T match" onClick={onToggleNegate} />
+      <ToggleChip label=".*" active={useRegex} title="Toggle regex mode" onClick={onToggleRegex} />
+      <span
+        style={{ color: regexError ? "#ef5350" : "#bbb" }}
+        title={regexError ?? undefined}
+      >
+        {status}
+      </span>
+      <IconBtn onClick={onClose} title="Close filter prompt (Esc). Pattern is kept.">
+        <X className="w-3 h-3" />
+      </IconBtn>
+    </div>
+  );
+}
+
+function ToggleChip({
+  label,
+  active,
+  title,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="px-1.5 py-0.5 rounded cursor-pointer"
+      style={{
+        background: active ? "#2a2a2a" : "transparent",
+        color: active ? "#e5e5e5" : "#888",
+        border: "1px solid " + (active ? "#3a3a3a" : "#222"),
+        fontFamily: "inherit",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function IconBtn({
+  onClick,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="p-1 rounded hover:bg-[#2a2a2a] cursor-pointer"
+    >
+      {children}
+    </button>
+  );
+}
+
+function KeyHint({ k, label }: { k: string; label: string }) {
+  return (
+    <span>
+      <span
+        className="px-1 rounded"
+        style={{ background: "#1a1a1a", color: "#aaa" }}
+      >
+        {k}
+      </span>
+      <span style={{ color: "#666" }}> {label}</span>
+    </span>
   );
 }
 
@@ -166,6 +792,7 @@ function TailToolbar({
   showAttrs,
   copied,
   lineCount,
+  totalLineCount,
   error,
   onToggleFollow,
   onToggleWrap,
@@ -178,6 +805,7 @@ function TailToolbar({
   showAttrs: boolean;
   copied: boolean;
   lineCount: number;
+  totalLineCount: number;
   error: unknown;
   onToggleFollow: () => void;
   onToggleWrap: () => void;
@@ -185,6 +813,7 @@ function TailToolbar({
   onJumpToBottom: () => void;
   onCopy: () => void;
 }) {
+  const filtered = lineCount !== totalLineCount;
   return (
     <div
       className="flex items-center gap-2 px-3 py-1.5 border-b text-[11px]"
@@ -227,7 +856,18 @@ function TailToolbar({
         <span>{copied ? "Copied" : "Copy"}</span>
       </TailBtn>
       <div className="ml-auto flex items-center gap-3 tabular-nums">
-        <span>{lineCount.toLocaleString()} lines</span>
+        <span>
+          {filtered ? (
+            <>
+              <span style={{ color: "#12b2a6" }}>
+                {lineCount.toLocaleString()}
+              </span>{" "}
+              / {totalLineCount.toLocaleString()} lines
+            </>
+          ) : (
+            <>{totalLineCount.toLocaleString()} lines</>
+          )}
+        </span>
         {error ? (
           <span style={{ color: "#ef5350" }}>
             err: {(error as Error).message}
@@ -272,17 +912,60 @@ function TailBtn({
 
 function TailRow({
   line,
+  lineIdx,
   wrap,
   showAttrs,
+  lineMatches,
+  activeMatchIdx,
+  searching,
 }: {
   line: TailLine;
+  lineIdx: number;
   wrap: boolean;
   showAttrs: boolean;
+  lineMatches: { match: SearchMatch; matchIdx: number }[];
+  activeMatchIdx: number;
+  searching: boolean;
 }) {
   const segments = useMemo(() => parseAnsi(line.body), [line.body]);
   const isError = line.severityNum >= 17;
+  // Fan matches out by location so body / attrKey / attrValue each get
+  // just the hits that belong to them, with the global matchIdx preserved
+  // for active-highlight detection.
+  const { bodyHits, attrKeyHitsByIdx, attrValHitsByIdx } = useMemo(() => {
+    const body: Highlight[] = [];
+    const keys = new Map<number, Highlight[]>();
+    const vals = new Map<number, Highlight[]>();
+    for (const lm of lineMatches) {
+      const h: Highlight = {
+        start: lm.match.loc.start,
+        end: lm.match.loc.end,
+        matchIdx: lm.matchIdx,
+      };
+      switch (lm.match.loc.kind) {
+        case "body":
+          body.push(h);
+          break;
+        case "attrKey": {
+          const arr = keys.get(lm.match.loc.attrIdx) ?? [];
+          arr.push(h);
+          keys.set(lm.match.loc.attrIdx, arr);
+          break;
+        }
+        case "attrValue": {
+          const arr = vals.get(lm.match.loc.attrIdx) ?? [];
+          arr.push(h);
+          vals.set(lm.match.loc.attrIdx, arr);
+          break;
+        }
+      }
+    }
+    return { bodyHits: body, attrKeyHitsByIdx: keys, attrValHitsByIdx: vals };
+  }, [lineMatches]);
+
   return (
     <div
+      data-line-idx={lineIdx}
       className={clsx(
         "flex gap-2",
         wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre",
@@ -303,46 +986,125 @@ function TailRow({
         <span style={{ color: "#888", flexShrink: 0 }}>{line.service}</span>
       ) : null}
       <span className="flex-1 min-w-0">
-        {/* Body rendered bold-white in zerolog console style — the message
-            is the thing the user scans for, so it sits at the top of the
-            visual hierarchy. ANSI SGR escapes in the body still override
-            if present. */}
+        {/* While a search is active we render the ANSI-stripped body so
+            highlight offsets line up cleanly; ANSI colouring returns once
+            the user closes the search bar. */}
         <span style={{ color: BODY_COLOR, fontWeight: 700 }}>
-          {segments.map((s, i) => (
-            <span key={i} style={segmentStyle(s.style)}>
-              {s.text}
-            </span>
-          ))}
+          {searching ? (
+            <HighlightedText
+              text={stripAnsi(line.body)}
+              highlights={bodyHits}
+              activeMatchIdx={activeMatchIdx}
+            />
+          ) : (
+            segments.map((s, i) => (
+              <span key={i} style={segmentStyle(s.style)}>
+                {s.text}
+              </span>
+            ))
+          )}
         </span>
         {showAttrs && line.attrs.length > 0 ? (
-          <AttrPairs pairs={line.attrs} isErrorRow={isError} />
+          <AttrPairs
+            pairs={line.attrs}
+            isErrorRow={isError}
+            keyHits={attrKeyHitsByIdx}
+            valueHits={attrValHitsByIdx}
+            activeMatchIdx={activeMatchIdx}
+            searching={searching}
+          />
         ) : null}
       </span>
     </div>
   );
 }
 
+interface Highlight {
+  start: number;
+  end: number;
+  matchIdx: number;
+}
+
+// Splits arbitrary text into plain + <mark> runs according to the search
+// hits passed in. The currently-active match gets a distinct colour so the
+// user can see which one `n` / `N` is on.
+function HighlightedText({
+  text,
+  highlights,
+  activeMatchIdx,
+}: {
+  text: string;
+  highlights: Highlight[];
+  activeMatchIdx: number;
+}) {
+  if (highlights.length === 0) return <>{text}</>;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  for (let i = 0; i < highlights.length; i++) {
+    const h = highlights[i];
+    if (h.start > cursor) parts.push(text.slice(cursor, h.start));
+    const isActive = h.matchIdx === activeMatchIdx;
+    parts.push(
+      <mark
+        key={i}
+        style={{
+          background: isActive ? "#ffaa00" : "#3a2f00",
+          color: isActive ? "#111" : "#ffcc66",
+          padding: "0 1px",
+          borderRadius: 2,
+        }}
+      >
+        {text.slice(h.start, h.end)}
+      </mark>,
+    );
+    cursor = h.end;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
+}
+
 // Zerolog-style `key=value` attribute rendering. Keys + equals share the
 // cyan field-name tone; values are rendered in the default body-value
 // colour. On error-level rows, the `error` field's value gets the bold-red
 // highlight zerolog's ConsoleWriter uses — the one attribute the user
-// almost always needs to see first.
+// almost always needs to see first. When a search is active, keys and
+// values are rendered via HighlightedText so matches in either half show
+// the yellow <mark> treatment.
 function AttrPairs({
   pairs,
   isErrorRow,
+  keyHits,
+  valueHits,
+  activeMatchIdx,
+  searching,
 }: {
   pairs: AttrPair[];
   isErrorRow: boolean;
+  keyHits: Map<number, Highlight[]>;
+  valueHits: Map<number, Highlight[]>;
+  activeMatchIdx: number;
+  searching: boolean;
 }) {
   return (
     <>
       {pairs.map((p, i) => {
         const isErrorField = isErrorRow && ERROR_ATTR_KEYS.has(p.key);
+        const kHits = searching ? keyHits.get(i) ?? [] : [];
+        const vHits = searching ? valueHits.get(i) ?? [] : [];
+        const valueStr = formatAttrValue(p);
         return (
           <span key={i}>
             {" "}
             <span style={{ color: KEY_COLOR }}>
-              {p.key}
+              {kHits.length > 0 ? (
+                <HighlightedText
+                  text={p.key}
+                  highlights={kHits}
+                  activeMatchIdx={activeMatchIdx}
+                />
+              ) : (
+                p.key
+              )}
               <span>=</span>
             </span>
             <span
@@ -352,7 +1114,15 @@ function AttrPairs({
                   : { color: VALUE_COLOR }
               }
             >
-              {formatAttrValue(p)}
+              {vHits.length > 0 ? (
+                <HighlightedText
+                  text={valueStr}
+                  highlights={vHits}
+                  activeMatchIdx={activeMatchIdx}
+                />
+              ) : (
+                valueStr
+              )}
             </span>
           </span>
         );

@@ -111,14 +111,18 @@ CREATE TABLE IF NOT EXISTS events (
     db_system        TEXT    GENERATED ALWAYS AS (json_extract(attributes, '$."db.system"')) VIRTUAL
 ) STRICT;
 
--- idx_events_time was previously defined here; every real query filters
--- on signal_type or service_name first, so the composite indexes below
--- always shadow it. Drop it on schema re-apply to reclaim the disk +
--- write-amplification cost on existing databases.
+-- Historical indexes that have since been subsumed or were never load-
+-- bearing; dropped on schema re-apply to reclaim disk + write amplification
+-- on existing databases.
+--   idx_events_time      — superseded by every composite below (every real
+--                          query filters on signal_type or service first).
+--   idx_events_svc_time  — redundant with idx_events_svc_signal_time; the
+--                          planner can use the composite for the leading
+--                          (service_name) prefix alone.
 DROP INDEX IF EXISTS idx_events_time;
+DROP INDEX IF EXISTS idx_events_svc_time;
 CREATE INDEX IF NOT EXISTS idx_events_dataset_time     ON events(dataset, time_ns DESC) WHERE dataset IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_signal_time      ON events(signal_type, time_ns DESC);
-CREATE INDEX IF NOT EXISTS idx_events_svc_time         ON events(service_name, time_ns DESC);
 CREATE INDEX IF NOT EXISTS idx_events_svc_signal_time  ON events(service_name, signal_type, time_ns DESC);
 CREATE INDEX IF NOT EXISTS idx_events_trace            ON events(trace_id, time_ns) WHERE trace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_roots            ON events(service_name, time_ns DESC, trace_id)
@@ -180,11 +184,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
     content='events', content_rowid='event_id', tokenize='porter unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-    INSERT INTO events_fts(rowid, body, name, service_name)
-    VALUES (NEW.event_id, NEW.body, NEW.name, NEW.service_name);
-END;
+-- INSERT trigger `events_ai` used to sync rows into events_fts. It was
+-- cheap-looking but expensive at scale: every per-row INSERT inside a
+-- transaction forces SQLite to allocate a subjournal page for rollback
+-- safety, which dominated writer CPU under load. We now populate
+-- events_fts explicitly in WriteBatch with a single INSERT...SELECT
+-- statement at the end of each batch — one subjournal entry instead of
+-- N. Drop the old trigger on schema re-apply.
+DROP TRIGGER IF EXISTS events_ai;
 
+-- Keep the DELETE trigger. Retention + Clear are infrequent bulk
+-- operations where trigger overhead is negligible, and the 'delete'
+-- command is the cleanest way to remove an FTS row.
 CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
     INSERT INTO events_fts(events_fts, rowid, body, name, service_name)
     VALUES ('delete', OLD.event_id, OLD.body, OLD.name, OLD.service_name);
