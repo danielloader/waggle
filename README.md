@@ -1,10 +1,17 @@
-# waggle
+<p align="center">
+  <img width="180" src="./docs/waggle.png" alt="waggle bee logo" />
+</p>
 
+<h1 align="center">waggle</h1>
+
+<p align="center">
 Local OpenTelemetry viewer inspired by Honeycomb — named for the
-[waggle dance](https://en.wikipedia.org/wiki/Waggle_dance) bees use to share
-locations. Run it next to your service, point any OTLP/HTTP exporter at
-`http://localhost:4318`, and browse a Honeycomb-style trace waterfall, log
-explorer, metrics browser, and structured query builder in the same tab.
+  <a href="https://en.wikipedia.org/wiki/Waggle_dance">waggle dance</a> bees
+  use to share locations. Run it next to your service, point any OTLP/HTTP
+  exporter at <code>http://localhost:4318</code>, and browse a Honeycomb-style
+  trace waterfall, log explorer, metrics browser, and structured query
+  builder in the same tab.
+</p>
 
 - Single static binary — pure Go, no CGO, no Docker required, no Node at runtime.
 - OTLP/HTTP ingest (protobuf + JSON) on `POST /v1/traces`, `POST /v1/logs`,
