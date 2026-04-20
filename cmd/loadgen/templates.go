@@ -655,8 +655,18 @@ func emitBigCheckoutFlow(ctx context.Context, tracers Tracers, loggers Loggers) 
 	notif := tracers["notifications"]
 	db := tracers["db-worker"]
 
+	// Deliberate clock-skew injection: the api-gateway's clock runs 35ms
+	// behind everyone else, so the root span's reported [start, end]
+	// sits entirely 35ms in the past relative to its children. Same
+	// reported duration as before — just shifted. Children keep their
+	// real wall-clock timestamps, so they all appear to start a bit
+	// before root's reported start *and* the last child's actual end
+	// overshoots root's reported end by ~35ms, exercising the
+	// extendedToNS propagation and the right-hand whisker.
+	const skewOffset = 35 * time.Millisecond
 	ctx, root := api.Start(ctx, "POST /checkout/complete",
-		trace.WithSpanKind(trace.SpanKindServer))
+		trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithTimestamp(time.Now().Add(-skewOffset)))
 	root.SetAttributes(
 		attribute.String("http.request.method", "POST"),
 		attribute.String("http.route", "/checkout/complete"),
@@ -667,7 +677,9 @@ func emitBigCheckoutFlow(ctx context.Context, tracers Tracers, loggers Loggers) 
 		attribute.Int("cart.item_count", 3+rand.IntN(8)),
 		attribute.String("checkout.flow", "one_click"),
 	)
-	defer root.End()
+	defer func() {
+		root.End(trace.WithTimestamp(time.Now().Add(-skewOffset)))
+	}()
 
 	// simpleChild starts a sibling under ctx, sets a few attributes, and
 	// sleeps a short realistic duration before ending. Keeps the body below
