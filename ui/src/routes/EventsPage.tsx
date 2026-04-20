@@ -12,6 +12,11 @@ import {
 } from "../features/query/QueryChart";
 import { ResultTabs } from "../features/query/ResultTabs";
 import {
+  LogDetailPane,
+  MetricDetailPane,
+  type SelectedRow,
+} from "../features/query/EventsTable";
+import {
   bucketMsFor,
   buildCountQuery,
   refreshIntervalMs,
@@ -43,12 +48,34 @@ export function EventsPage() {
   const [chartOpen, setChartOpen] = useState(true);
   const [scrollProgress, setScrollProgress] = useState(0);
   const rafRef = useRef<number | null>(null);
+  // Row selection for the Explore Data tab's detail pane. Owned here so
+  // the pane renders as a full-height sibling of the main column instead
+  // of cramped inside the tab body. Only used on logs/metrics — spans
+  // have their own trace-detail waterfall route.
+  const [selectedRow, setSelectedRow] = useState<SelectedRow | null>(null);
 
   useEffect(() => {
     setQueryOpen(true);
     setChartOpen(true);
     setScrollProgress(0);
   }, [search.tab]);
+
+  // Clear selection when the user changes tabs or datasets — the pane's
+  // column schema belongs to the previous result set and won't decode the
+  // next one correctly.
+  useEffect(() => {
+    setSelectedRow(null);
+  }, [search.tab, search.dataset]);
+
+  // Escape closes the pane — matches the trace-detail route's affordance.
+  useEffect(() => {
+    if (!selectedRow) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSelectedRow(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedRow]);
 
   useEffect(
     () => () => {
@@ -128,60 +155,93 @@ export function EventsPage() {
   const metricsNeedsField =
     search.dataset === "metrics" && !hasMetricField(search);
 
+  // The detail pane is only meaningful for logs/metrics rows; spans have
+  // their own /traces/$traceId waterfall route already.
+  const detailPaneEligible =
+    search.dataset === "logs" || search.dataset === "metrics";
+  const pane = detailPaneEligible && selectedRow ? selectedRow : null;
+
   return (
-    <div className="h-full flex flex-col">
-      <Accordion
-        label="Query"
-        open={queryOpen}
-        collapseProgress={scrollProgress}
-        onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
-        collapsedSummary={querySummary(search)}
-      >
-        <DefinePanel
-          dataset={search.dataset}
-          search={search}
-          onChange={setSearch}
-          onDatasetChange={changeDataset}
-          onRun={() => chart.refetch()}
-          isRunning={chart.isFetching}
-        />
-      </Accordion>
-      <Accordion
-        label="Chart"
-        open={chartOpen}
-        onToggle={() => setChartOpen((o) => !o)}
-      >
-        <div className="p-3" style={{ background: "var(--color-surface)" }}>
-          {metricsNeedsField ? (
-            <div
-              className="flex items-center justify-center text-sm px-4 text-center"
-              style={{ color: "var(--color-ink-muted)", height: 125 }}
-            >
-              Add a metric field to Select — e.g.{" "}
-              <code className="mx-1 font-mono">MAX(requests.total)</code>{" "}
-              or <code className="mx-1 font-mono">P99(memory.used)</code>.
-            </div>
+    <div className="h-full flex min-h-0">
+      <div className="flex-1 flex flex-col min-w-0">
+        <Accordion
+          label="Query"
+          open={queryOpen}
+          collapseProgress={scrollProgress}
+          onToggle={() => (queryOpen ? setQueryOpen(false) : reopen(setQueryOpen))}
+          collapsedSummary={querySummary(search)}
+        >
+          <DefinePanel
+            dataset={search.dataset}
+            search={search}
+            onChange={setSearch}
+            onDatasetChange={changeDataset}
+            onRun={() => chart.refetch()}
+            isRunning={chart.isFetching}
+          />
+        </Accordion>
+        <Accordion
+          label="Chart"
+          open={chartOpen}
+          onToggle={() => setChartOpen((o) => !o)}
+        >
+          <div className="p-3" style={{ background: "var(--color-surface)" }}>
+            {metricsNeedsField ? (
+              <div
+                className="flex items-center justify-center text-sm px-4 text-center"
+                style={{ color: "var(--color-ink-muted)", height: 125 }}
+              >
+                Add a metric field to Select — e.g.{" "}
+                <code className="mx-1 font-mono">MAX(requests.total)</code>{" "}
+                or <code className="mx-1 font-mono">P99(memory.used)</code>.
+              </div>
+            ) : (
+              <ChartStack
+                result={chart.data}
+                loading={chart.isPending}
+                error={chart.error}
+                bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
+                fromMs={resolved.fromMs}
+                toMs={resolved.toMs}
+                onBucketClick={handleBucketClick}
+              />
+            )}
+          </div>
+        </Accordion>
+        <div className="flex-1 overflow-hidden">
+          <ResultTabs
+            dataset={search.dataset}
+            search={search}
+            onTabChange={(tab) => setSearch({ ...search, tab })}
+            onExploreScrollY={handleExploreScrollY}
+            selectedRow={detailPaneEligible ? selectedRow : null}
+            onSelectRow={detailPaneEligible ? setSelectedRow : undefined}
+          />
+        </div>
+      </div>
+      {pane && (
+        <div
+          className="shrink-0 w-[420px] flex flex-col border-l min-h-0"
+          style={{
+            borderColor: "var(--color-border)",
+            background: "var(--color-surface)",
+          }}
+        >
+          {search.dataset === "logs" ? (
+            <LogDetailPane
+              columns={pane.columns}
+              row={pane.row}
+              onClose={() => setSelectedRow(null)}
+            />
           ) : (
-            <ChartStack
-              result={chart.data}
-              loading={chart.isPending}
-              error={chart.error}
-              bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
-              fromMs={resolved.fromMs}
-              toMs={resolved.toMs}
-              onBucketClick={handleBucketClick}
+            <MetricDetailPane
+              columns={pane.columns}
+              row={pane.row}
+              onClose={() => setSelectedRow(null)}
             />
           )}
         </div>
-      </Accordion>
-      <div className="flex-1 overflow-hidden">
-        <ResultTabs
-          dataset={search.dataset}
-          search={search}
-          onTabChange={(tab) => setSearch({ ...search, tab })}
-          onExploreScrollY={handleExploreScrollY}
-        />
-      </div>
+      )}
     </div>
   );
 }

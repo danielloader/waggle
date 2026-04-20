@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import type { Dataset, QuerySearch } from "../../lib/query";
 import { OverviewTab } from "./OverviewTab";
-import { EventsTable } from "./EventsTable";
+import { EventsTable, type SelectedRow } from "./EventsTable";
 import { TracesTab } from "./TracesTab";
 
 type TabID = "overview" | "traces" | "explore";
@@ -15,6 +15,11 @@ interface Props {
   /** Scroll callback from the Explore Data tab — the page uses it to
    *  collapse the query/chart header once the user drills in. */
   onExploreScrollY?: (y: number) => void;
+  /** Row selection for the Explore Data tab's detail pane. Lifted to
+   *  the page so the pane can render as a full-height sibling of the
+   *  main content column rather than cramped inside the tab body. */
+  selectedRow?: SelectedRow | null;
+  onSelectRow?: (next: SelectedRow | null) => void;
 }
 
 type Tab = { id: TabID; label: string; datasets?: Dataset[] };
@@ -39,6 +44,8 @@ export function ResultTabs({
   onTabChange,
   rightSlot,
   onExploreScrollY,
+  selectedRow,
+  onSelectRow,
 }: Props) {
   const visibleTabs = TABS.filter(
     (t) => !t.datasets || t.datasets.includes(dataset),
@@ -95,6 +102,8 @@ export function ResultTabs({
             dataset={dataset}
             search={search}
             onScrollY={onExploreScrollY}
+            selected={selectedRow ?? null}
+            onSelect={onSelectRow}
           />
         )}
       </div>

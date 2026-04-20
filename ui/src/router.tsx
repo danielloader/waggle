@@ -4,10 +4,18 @@ import {
   createRouter,
   Navigate,
 } from "@tanstack/react-router";
+import { z } from "zod";
 import { RootLayout } from "./routes/root";
 import { EventsPage } from "./routes/EventsPage";
 import { TraceView } from "./features/traces/TraceView";
 import { querySearchSchema } from "./lib/query";
+
+// Trace route accepts an optional ?span=<id> to deep-link into a specific
+// span — e.g. clicking the trace link on a log row opens the waterfall
+// with that log's emitting span pre-selected and scrolled into view.
+const traceDetailSearchSchema = z.object({
+  span: z.string().optional(),
+});
 
 const rootRoute = createRootRoute({
   component: RootLayout,
@@ -53,9 +61,11 @@ const metricsRedirect = createRoute({
 const traceDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/traces/$traceId",
+  validateSearch: traceDetailSearchSchema,
   component: function TraceDetailRoute() {
     const { traceId } = traceDetailRoute.useParams();
-    return <TraceView traceID={traceId} />;
+    const { span } = traceDetailRoute.useSearch();
+    return <TraceView traceID={traceId} initialSpanID={span ?? null} />;
   },
 });
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Link as LinkIcon } from "lucide-react";
 import clsx from "clsx";
 import { serviceColor } from "../../lib/colors";
 import { formatDuration } from "../../lib/format";
@@ -32,6 +32,11 @@ interface Props {
    * in the right-hand panel.
    */
   onSelectEvent?: (spanID: string, eventIdx: number) => void;
+  /**
+   * Called when the row's span-links chain-icon is clicked. Caller should
+   * select the span and flip the right-hand panel to its Links tab.
+   */
+  onSelectLinks?: (spanID: string) => void;
 }
 
 /**
@@ -56,6 +61,7 @@ export function Waterfall({
   highlightSpanIDs,
   scrollToSpanID,
   onSelectEvent,
+  onSelectLinks,
 }: Props) {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
@@ -129,6 +135,7 @@ export function Waterfall({
                 onSelect={onSelect}
                 onToggleCollapse={onToggleCollapse}
                 onSelectEvent={onSelectEvent}
+                onSelectLinks={onSelectLinks}
               />
             );
           })}
@@ -208,6 +215,7 @@ interface RowProps {
   onSelect: (spanID: string) => void;
   onToggleCollapse: (spanID: string) => void;
   onSelectEvent?: (spanID: string, eventIdx: number) => void;
+  onSelectLinks?: (spanID: string) => void;
 }
 
 function Row({
@@ -223,6 +231,7 @@ function Row({
   onSelect,
   onToggleCollapse,
   onSelectEvent,
+  onSelectLinks,
 }: RowProps) {
   const color = serviceColor(row.span.service_name);
   const isError = isSpanError(row.span);
@@ -442,6 +451,25 @@ function Row({
             />
           );
         })}
+        {(row.span.links?.length ?? 0) > 0 && onSelectLinks && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectLinks(row.span.span_id);
+            }}
+            title={`View ${row.span.links!.length} span link${row.span.links!.length === 1 ? "" : "s"}`}
+            aria-label={`View ${row.span.links!.length} span link${row.span.links!.length === 1 ? "" : "s"}`}
+            className="absolute p-0.5 rounded hover:bg-[var(--color-card-hover)]"
+            style={{
+              right: 2,
+              top: 6,
+              color: "var(--color-ink-muted)",
+            }}
+          >
+            <LinkIcon className="w-3.5 h-3.5" />
+          </button>
+        )}
         </div>
       </div>
     </div>

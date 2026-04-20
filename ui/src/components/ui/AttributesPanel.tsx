@@ -19,11 +19,12 @@ interface Props {
   /** Placeholder for the filter input. */
   filterPlaceholder?: string;
   /**
-   * Where clicking the filter button on a scalar row navigates to. In the
-   * unified-events world this is always /events, but span-detail still
-   * links to /traces for backward-compat; leave the union open.
+   * Where clicking the filter button on a scalar row navigates to. The
+   * query builder's URL schema is shared across /traces, /logs, and
+   * /metrics — the caller picks the dataset-appropriate route. Defaults
+   * to /traces.
    */
-  filterTarget?: "/events" | "/traces" | "/logs";
+  filterTarget?: "/traces" | "/logs" | "/metrics";
 }
 
 /**
@@ -38,7 +39,7 @@ export function AttributesPanel({
   rows,
   attributesJson,
   filterPlaceholder = "Filter fields and values",
-  filterTarget = "/events",
+  filterTarget = "/traces",
 }: Props) {
   const navigate = useNavigate();
   const [filter, setFilter] = useState("");

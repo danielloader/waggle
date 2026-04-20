@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Ghost, RotateCw } from "lucide-react";
 import { Link } from "@tanstack/react-router";
@@ -20,9 +20,13 @@ import { TraceSummary } from "./TraceSummary";
 
 interface Props {
   traceID: string;
+  /** When set, once the trace loads we select this span, scroll it into
+   *  view, and uncollapse its ancestors. Used for deep links from log
+   *  rows ("?span=<id>"). */
+  initialSpanID?: string | null;
 }
 
-export function TraceView({ traceID }: Props) {
+export function TraceView({ traceID, initialSpanID = null }: Props) {
   const query = useQuery({
     queryKey: ["trace", traceID],
     queryFn: ({ signal }) => api.getTrace(traceID, signal),
@@ -30,11 +34,27 @@ export function TraceView({ traceID }: Props) {
 
   const model = useMemo(() => (query.data ? buildTraceModel(query.data) : null), [query.data]);
 
-  const [selectedSpanID, setSelectedSpanID] = useState<string | null>(null);
+  const [selectedSpanID, setSelectedSpanID] = useState<string | null>(initialSpanID);
   const [selectedEventIdx, setSelectedEventIdx] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState("fields");
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [scrollTarget, setScrollTarget] = useState<string | null>(null);
+  const [scrollTarget, setScrollTarget] = useState<string | null>(initialSpanID);
+  // One-shot: once the trace data arrives, uncollapse ancestors of the
+  // deep-linked span so it's visible when we scroll to it.
+  const hydratedFromDeepLink = useRef(false);
+  useEffect(() => {
+    if (hydratedFromDeepLink.current) return;
+    if (!initialSpanID || !model) return;
+    const ancestors = ancestorsOf(model, initialSpanID);
+    if (ancestors.length > 0) {
+      setCollapsed((prev) => {
+        const next = new Set(prev);
+        for (const a of ancestors) next.delete(a);
+        return next;
+      });
+    }
+    hydratedFromDeepLink.current = true;
+  }, [initialSpanID, model]);
 
   // Row click contract: "show this span's attributes" — drop any in-flight
   // event drill-down and flip the panel back to the Fields tab. Passed to
@@ -220,6 +240,17 @@ export function TraceView({ traceID }: Props) {
               }
               setSelectedEventIdx(eventIdx);
               setActiveTab("events");
+            }}
+            onSelectLinks={(spanID) => {
+              // Chain-icon click: select the span and flip the right
+              // panel to its Links tab so the linked trace/span IDs are
+              // visible immediately.
+              if (spanID !== selected?.span_id) {
+                setSelectedSpanID(spanID);
+                setScrollTarget(spanID);
+              }
+              setSelectedEventIdx(null);
+              setActiveTab("links");
             }}
           />
         </div>
