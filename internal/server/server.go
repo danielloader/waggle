@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/danielloader/waggle/internal/api"
@@ -125,6 +126,16 @@ func (s *Server) mountAPI(mux *http.ServeMux) {
 			"listen_addr": s.cfg.IngestAddr,
 		})
 	})
+	// pprof endpoints — gated on --dev so release binaries don't expose
+	// diagnostic surface. In dev the handlers are the stock library code
+	// and the listener is localhost by default.
+	if s.cfg.Dev {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 	if s.apiRouter != nil {
 		s.apiRouter.Mount(mux)
 	}

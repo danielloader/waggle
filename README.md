@@ -74,6 +74,24 @@ text, ANSI stripped.
 
 ![Tail tab — terminal-style follow view](docs/logs-tail.png)
 
+**Keyboard shortcuts**, modelled on `less`:
+
+| Key | Action |
+| --- | --- |
+| `/` | Search (highlight matches — body, attribute keys, attribute values) |
+| `&` | Filter (hide non-matching lines; pattern persists when the prompt closes) |
+| `n` / `N` | Next / previous match |
+| `Enter` / `Shift+Enter` | Same as `n` / `N` while the search prompt is focused |
+| `Esc` | Close prompt (search pattern clears; filter pattern is kept) |
+| `F` | Toggle Follow (resume tailing) |
+| `g` / `G` | Jump to top / bottom |
+
+Both prompts support smart case (lowercase = insensitive, any uppercase
+= sensitive) and a `.*` toggle for regex. Filter has an extra `!`
+toggle for "show lines that DON'T match". Filter and search compose:
+`&pay` narrows to payment lines, then `/declined` highlights card
+declines within that view.
+
 ## Install
 
 **Binary** — grab a release archive from

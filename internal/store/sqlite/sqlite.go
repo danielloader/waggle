@@ -78,7 +78,11 @@ func (s *Store) applySchema(ctx context.Context) error {
 		"PRAGMA mmap_size = 268435456",
 		"PRAGMA cache_size = -65536",
 		"PRAGMA foreign_keys = ON",
-		"PRAGMA wal_autocheckpoint = 1000",
+		// Default is 1000 pages (~4 MB). We bump to 5000 (~20 MB) so WAL
+		// checkpoints happen between batches rather than mid-batch under
+		// load; a checkpoint firing inside a large insert transaction was
+		// one of the contributors to the writer-deadline stall we profiled.
+		"PRAGMA wal_autocheckpoint = 5000",
 	}
 	for _, p := range pragmas {
 		if _, err := s.writer.ExecContext(ctx, p); err != nil {

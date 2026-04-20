@@ -38,6 +38,9 @@ func (s *Store) WriteBatch(ctx context.Context, b store.Batch) error {
 	if err := writeEvents(ctx, tx, b.Events); err != nil {
 		return err
 	}
+	if err := populateEventsFTS(ctx, tx, len(b.Events)); err != nil {
+		return err
+	}
 	if err := writeMetricEvents(ctx, tx, b.MetricEvents); err != nil {
 		return err
 	}
@@ -164,6 +167,31 @@ func writeEvents(ctx context.Context, tx *sql.Tx, events []store.Event) error {
 				return fmt.Errorf("insert span_link: %w", err)
 			}
 		}
+	}
+	return nil
+}
+
+// populateEventsFTS adds the just-inserted events to the FTS5 mirror in
+// one statement, replacing the AFTER INSERT trigger that used to fire on
+// every row. N = number of events inserted in this batch (which we know
+// from the caller). The IDs are contiguous for consecutive plain INSERTs
+// inside a single tx, so we compute the range from last_insert_rowid()
+// and bulk-copy. This drops the per-row subjournal cost that dominated
+// writer CPU in the profile.
+func populateEventsFTS(ctx context.Context, tx *sql.Tx, n int) error {
+	if n == 0 {
+		return nil
+	}
+	var lastID int64
+	if err := tx.QueryRowContext(ctx, "SELECT last_insert_rowid()").Scan(&lastID); err != nil {
+		return fmt.Errorf("fts: read last_insert_rowid: %w", err)
+	}
+	firstID := lastID - int64(n) + 1
+	const q = `INSERT INTO events_fts(rowid, body, name, service_name)
+		SELECT event_id, body, name, service_name FROM events
+		WHERE event_id BETWEEN ? AND ?`
+	if _, err := tx.ExecContext(ctx, q, firstID, lastID); err != nil {
+		return fmt.Errorf("fts: populate: %w", err)
 	}
 	return nil
 }
