@@ -55,7 +55,10 @@ export function EventsPage() {
   const [selectedRow, setSelectedRow] = useState<SelectedRow | null>(null);
 
   useEffect(() => {
-    setQueryOpen(true);
+    // The Tail tab is a focused follow view — open to a collapsed Query
+    // header so the user can still dip in to tweak filters, but the chart
+    // is hidden entirely (see below). Every other tab re-opens both.
+    setQueryOpen(search.tab !== "tail");
     setChartOpen(true);
     setScrollProgress(0);
   }, [search.tab]);
@@ -158,6 +161,11 @@ export function EventsPage() {
   const metricsNeedsField =
     search.dataset === "metrics" && !hasMetricField(search);
 
+  // Tail hides the chart stack and the detail pane — it's a focused feed,
+  // not an exploratory view. The Query accordion still renders (collapsed)
+  // so the user can pop it open to change filters without leaving the tab.
+  const isTail = search.tab === "tail";
+
   // The detail pane is only meaningful for logs/metrics rows; spans have
   // their own /traces/$traceId waterfall route already.
   const detailPaneEligible =
@@ -183,34 +191,36 @@ export function EventsPage() {
             isRunning={chart.isFetching}
           />
         </Accordion>
-        <Accordion
-          label="Chart"
-          open={chartOpen}
-          onToggle={() => setChartOpen((o) => !o)}
-        >
-          <div className="p-3" style={{ background: "var(--color-surface)" }}>
-            {metricsNeedsField ? (
-              <div
-                className="flex items-center justify-center text-sm px-4 text-center"
-                style={{ color: "var(--color-ink-muted)", height: 125 }}
-              >
-                Add a metric field to Select — e.g.{" "}
-                <code className="mx-1 font-mono">MAX(requests.total)</code>{" "}
-                or <code className="mx-1 font-mono">P99(memory.used)</code>.
-              </div>
-            ) : (
-              <ChartStack
-                result={chart.data}
-                loading={chart.isPending}
-                error={chart.error}
-                bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
-                fromMs={resolved.fromMs}
-                toMs={resolved.toMs}
-                onBucketClick={handleBucketClick}
-              />
-            )}
-          </div>
-        </Accordion>
+        {!isTail && (
+          <Accordion
+            label="Chart"
+            open={chartOpen}
+            onToggle={() => setChartOpen((o) => !o)}
+          >
+            <div className="p-3" style={{ background: "var(--color-surface)" }}>
+              {metricsNeedsField ? (
+                <div
+                  className="flex items-center justify-center text-sm px-4 text-center"
+                  style={{ color: "var(--color-ink-muted)", height: 125 }}
+                >
+                  Add a metric field to Select — e.g.{" "}
+                  <code className="mx-1 font-mono">MAX(requests.total)</code>{" "}
+                  or <code className="mx-1 font-mono">P99(memory.used)</code>.
+                </div>
+              ) : (
+                <ChartStack
+                  result={chart.data}
+                  loading={chart.isPending}
+                  error={chart.error}
+                  bucketMs={bucketMsFor(resolved.durationMs, search.granularity)}
+                  fromMs={resolved.fromMs}
+                  toMs={resolved.toMs}
+                  onBucketClick={handleBucketClick}
+                />
+              )}
+            </div>
+          </Accordion>
+        )}
         <div className="flex-1 overflow-hidden">
           <ResultTabs
             dataset={search.dataset}
