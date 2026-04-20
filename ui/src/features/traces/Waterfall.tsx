@@ -373,17 +373,25 @@ function Row({
             means percentages land inside the padded area instead of
             spilling to the timeline column's border edges. */}
         <div className="relative w-full h-full">
-        {/* Dashed skew extension — drawn under the solid bar. */}
-        {row.hasSkew && (
-          <div
-            className="absolute border-t border-dashed"
-            style={{
-              left: `${extFromPct}%`,
-              width: `${Math.max(extToPct - extFromPct, 0.2)}%`,
-              top: "50%",
-              borderColor: color,
-              opacity: 0.5,
-            }}
+        {/* Skew whiskers — rendered as a thin wire just below the bar
+            with a vertical cap at the extreme descendant bound, and a
+            short drop from the bar's own edge down to the wire. Only the
+            side(s) with actual overrun draw. Mirrors Honeycomb's box-plot
+            convention for "span covered more time than it claimed". */}
+        {row.extendedFromNS < row.span.start_ns && (
+          <SkewWhisker
+            color={color}
+            side="left"
+            wireFromPct={extFromPct}
+            wireToPct={leftPct}
+          />
+        )}
+        {row.extendedToNS > row.span.end_ns && (
+          <SkewWhisker
+            color={color}
+            side="right"
+            wireFromPct={leftPct + widthPct}
+            wireToPct={extToPct}
           />
         )}
         {/* Solid own-duration bar. Errors flip to red outright for
@@ -437,6 +445,77 @@ function Row({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Whisker indicating clock skew on one side of the bar: a thin horizontal
+ * wire just below the bar, a short drop connecting it to the bar's own
+ * edge, and a vertical cap at the extreme descendant bound. Drawn with the
+ * service colour at reduced opacity so it reads as "related to the bar
+ * but not part of its reported duration".
+ */
+function SkewWhisker({
+  color,
+  side,
+  wireFromPct,
+  wireToPct,
+}: {
+  color: string;
+  side: "left" | "right";
+  /** Left edge of the horizontal wire, as % of the timeline. */
+  wireFromPct: number;
+  /** Right edge of the horizontal wire, as % of the timeline. */
+  wireToPct: number;
+}) {
+  // Bar is drawn at top:8 height:10 (so bottom edge y=18). The wire sits
+  // 3px below with a 1px stroke, caps are 7px tall straddling the wire.
+  const wireTop = 21;
+  const capTop = 18;
+  const capHeight = 7;
+  const dropTop = 18;
+  const dropHeight = 4;
+  const capPct = side === "left" ? wireFromPct : wireToPct;
+  const dropPct = side === "left" ? wireToPct : wireFromPct;
+  const wireWidthPct = Math.max(wireToPct - wireFromPct, 0);
+  return (
+    <>
+      <div
+        className="absolute"
+        style={{
+          left: `${wireFromPct}%`,
+          width: `${wireWidthPct}%`,
+          top: wireTop,
+          height: 1,
+          background: color,
+          opacity: 0.7,
+        }}
+      />
+      <div
+        className="absolute"
+        style={{
+          left: `${capPct}%`,
+          top: capTop,
+          height: capHeight,
+          width: 1,
+          background: color,
+          opacity: 0.7,
+          transform: "translateX(-50%)",
+        }}
+      />
+      <div
+        className="absolute"
+        style={{
+          left: `${dropPct}%`,
+          top: dropTop,
+          height: dropHeight,
+          width: 1,
+          background: color,
+          opacity: 0.5,
+          transform: side === "right" ? "translateX(-100%)" : undefined,
+        }}
+      />
+    </>
   );
 }
 
