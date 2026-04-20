@@ -91,6 +91,8 @@ function HistoryRow({
   entry: QueryHistoryEntry;
   onClick: () => void;
 }) {
+  const query = safeParseQuery(entry.query_json);
+  const windowLabel = query ? formatWindow(query) : null;
   return (
     <li>
       <button
@@ -103,7 +105,7 @@ function HistoryRow({
         }}
       >
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1.5">
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <DatasetPill dataset={entry.dataset} />
             <span
               className="text-xs"
@@ -111,6 +113,15 @@ function HistoryRow({
             >
               {relativeTime(entry.last_run_ns)}
             </span>
+            {windowLabel && (
+              <span
+                className="text-xs tabular-nums"
+                style={{ color: "var(--color-ink-muted)" }}
+                title="Time window the query ran against"
+              >
+                · {windowLabel}
+              </span>
+            )}
             {entry.run_count > 1 && (
               <span
                 className="inline-flex items-center gap-1 text-[10px] tabular-nums px-1.5 py-0.5 rounded"
@@ -132,6 +143,51 @@ function HistoryRow({
       </button>
     </li>
   );
+}
+
+// Format a Query's time range as "Apr 20 11:03 – 12:03 (1h)" — short
+// enough to fit on the row's metadata line, precise enough to tell the
+// user "this ran against a 1h window starting here". Falls back to an
+// empty label if the range is malformed.
+function formatWindow(q: Query): string | null {
+  const fromMs = q.time_range?.from ? new Date(q.time_range.from).getTime() : NaN;
+  const toMs = q.time_range?.to ? new Date(q.time_range.to).getTime() : NaN;
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) {
+    return null;
+  }
+  const from = new Date(fromMs);
+  const to = new Date(toMs);
+  const duration = humanDuration(toMs - fromMs);
+  // Same calendar day → show date once, both clocks. Different days → include
+  // date on both ends so "yesterday 23:30 – today 00:30" isn't misread.
+  const sameDay =
+    from.getFullYear() === to.getFullYear() &&
+    from.getMonth() === to.getMonth() &&
+    from.getDate() === to.getDate();
+  const datePart = `${shortMonth(from)} ${from.getDate()}`;
+  if (sameDay) {
+    return `${datePart} ${clock(from)} – ${clock(to)} (${duration})`;
+  }
+  return `${datePart} ${clock(from)} – ${shortMonth(to)} ${to.getDate()} ${clock(to)} (${duration})`;
+}
+
+function shortMonth(d: Date): string {
+  return d.toLocaleString(undefined, { month: "short" });
+}
+
+function clock(d: Date): string {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function humanDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = m / 60;
+  if (h < 24) return h % 1 === 0 ? `${h}h` : `${h.toFixed(1)}h`;
+  const d = h / 24;
+  return d % 1 === 0 ? `${d}d` : `${d.toFixed(1)}d`;
 }
 
 function DatasetPill({ dataset }: { dataset: string }) {
