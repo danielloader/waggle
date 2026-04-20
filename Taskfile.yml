@@ -93,6 +93,16 @@ tasks:
     cmds:
       - go run ./cmd/loadgen {{.CLI_ARGS}}
 
+  loadgen-bulk:
+    desc: Fill a new DB with 10M synthetic events for query benchmarking (--db path --total N).
+    cmds:
+      - go run ./cmd/loadgen-bulk {{.CLI_ARGS}}
+
+  bench-queries:
+    desc: Run query timing battery against a waggle DB (--db path --runs N).
+    cmds:
+      - go run ./cmd/bench-queries {{.CLI_ARGS}}
+
   # ---------------------------------------------------------- release
   release:snapshot:
     desc: Build a snapshot release locally (archives + docker image, no publish). Requires `goreleaser` on PATH.
