@@ -23,7 +23,8 @@ export interface SelectedRow {
 
 interface Props {
   dataset: Dataset;
-  search: QuerySearch;
+  querySearch: QuerySearch;
+  runCount: number;
   /** Reports the scroll container's vertical offset on every scroll event so
    *  the page can collapse the query/chart header once the user drills in. */
   onScrollY?: (y: number) => void;
@@ -39,18 +40,19 @@ interface Props {
  * dataset + WHERE + time range. Backed by the same /api/query endpoint the
  * chart uses; empty SELECT switches that endpoint into raw-rows mode.
  */
-export function EventsTable({ dataset, search, onScrollY, selected, onSelect }: Props) {
+export function EventsTable({ dataset, querySearch, runCount, onScrollY, selected, onSelect }: Props) {
   const result = useQuery({
     queryKey: [
       "events",
       dataset,
-      search.where,
-      search.range,
-      search.from,
-      search.to,
+      querySearch.where,
+      querySearch.range,
+      querySearch.from,
+      querySearch.to,
+      runCount,
     ],
     queryFn: ({ signal }) => {
-      const resolved = resolveSearchRange(search);
+      const resolved = resolveSearchRange(querySearch);
       return runQuery(
         {
           dataset,
@@ -59,13 +61,13 @@ export function EventsTable({ dataset, search, onScrollY, selected, onSelect }: 
             to: new Date(resolved.toMs).toISOString(),
           },
           select: [], // raw-rows mode
-          where: search.where,
+          where: querySearch.where,
           limit: 500,
         },
         signal,
       );
     },
-    refetchInterval: refreshIntervalMs(search.refresh),
+    refetchInterval: refreshIntervalMs(querySearch.refresh),
   });
 
   if (result.isPending) return <Centered>Loading…</Centered>;

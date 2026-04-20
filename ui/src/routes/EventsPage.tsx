@@ -128,16 +128,19 @@ export function EventsPage() {
 
   useRefreshPersistence(search, setSearch);
 
+  // committedSearch is the query that was last *run*. It only advances when
+  // the user clicks Run — filter edits alone don't trigger a fetch.
+  const [committedSearch, setCommittedSearch] = useState<QuerySearch>(search);
+  // runCount is included in the queryKey so clicking Run with unchanged
+  // params still forces a fresh fetch (same key otherwise → cache hit).
+  const [runCount, setRunCount] = useState(0);
+
   const chart = useQuery({
-    queryKey: ["query", search.dataset, search],
+    queryKey: ["query", committedSearch.dataset, committedSearch, runCount],
     queryFn: ({ signal }) =>
-      runQuery(buildCountQuery(search.dataset, search), signal),
-    refetchInterval: refreshIntervalMs(search.refresh),
-    // For metrics the default COUNT-of-metric-events isn't informative on
-    // its own — the user needs to pick a specific metric field (e.g.
-    // MAX(requests.total)) before the chart means anything. Disable the
-    // fetch until they have.
-    enabled: search.dataset !== "metrics" || hasMetricField(search),
+      runQuery(buildCountQuery(committedSearch.dataset, committedSearch), signal),
+    refetchInterval: refreshIntervalMs(committedSearch.refresh),
+    enabled: committedSearch.dataset !== "metrics" || hasMetricField(committedSearch),
   });
 
   const resolved = resolveSearchRange(search);
@@ -176,7 +179,7 @@ export function EventsPage() {
             search={search}
             onChange={setSearch}
             onDatasetChange={changeDataset}
-            onRun={() => chart.refetch()}
+            onRun={() => { setCommittedSearch(search); setRunCount((c) => c + 1); }}
             isRunning={chart.isFetching}
           />
         </Accordion>
@@ -212,6 +215,8 @@ export function EventsPage() {
           <ResultTabs
             dataset={search.dataset}
             search={search}
+            querySearch={committedSearch}
+            runCount={runCount}
             onTabChange={(tab) => setSearch({ ...search, tab })}
             onExploreScrollY={handleExploreScrollY}
             selectedRow={detailPaneEligible ? selectedRow : null}

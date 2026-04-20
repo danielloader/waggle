@@ -7,7 +7,8 @@ import { formatDuration, formatRelativeTimestamp } from "../../lib/format";
 import { CopyButton } from "../../components/ui/CopyButton";
 
 interface Props {
-  search: QuerySearch;
+  querySearch: QuerySearch;
+  runCount: number;
 }
 
 /**
@@ -16,11 +17,11 @@ interface Props {
  * Each row is one trace (by virtue of being its root span) and links into
  * the full waterfall view.
  */
-export function TracesTab({ search }: Props) {
+export function TracesTab({ querySearch, runCount }: Props) {
   const result = useQuery({
-    queryKey: ["traces-tab", search],
+    queryKey: ["traces-tab", querySearch, runCount],
     queryFn: ({ signal }) => {
-      const resolved = resolveSearchRange(search);
+      const resolved = resolveSearchRange(querySearch);
       return runQuery(
         {
           dataset: "spans",
@@ -30,7 +31,7 @@ export function TracesTab({ search }: Props) {
           },
           select: [], // raw rows
           where: [
-            ...search.where,
+            ...querySearch.where,
             { field: "is_root", op: "=", value: true },
           ],
           order_by: [{ field: "duration_ns", dir: "desc" }],
