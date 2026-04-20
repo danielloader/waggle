@@ -111,7 +111,11 @@ CREATE TABLE IF NOT EXISTS events (
     db_system        TEXT    GENERATED ALWAYS AS (json_extract(attributes, '$."db.system"')) VIRTUAL
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_events_time             ON events(time_ns DESC);
+-- idx_events_time was previously defined here; every real query filters
+-- on signal_type or service_name first, so the composite indexes below
+-- always shadow it. Drop it on schema re-apply to reclaim the disk +
+-- write-amplification cost on existing databases.
+DROP INDEX IF EXISTS idx_events_time;
 CREATE INDEX IF NOT EXISTS idx_events_dataset_time     ON events(dataset, time_ns DESC) WHERE dataset IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_events_signal_time      ON events(signal_type, time_ns DESC);
 CREATE INDEX IF NOT EXISTS idx_events_svc_time         ON events(service_name, time_ns DESC);
