@@ -58,7 +58,6 @@ export function TailTab({ querySearch, runCount }: Props) {
   const [filterNegate, setFilterNegate] = useState(false);
   const filterInputRef = useRef<HTMLInputElement>(null);
   const searchOpen = promptMode === "search";
-  const filterOpen = promptMode === "filter";
 
   const result = useQuery({
     queryKey: [
@@ -160,16 +159,25 @@ export function TailTab({ querySearch, runCount }: Props) {
   // Negation flips the predicate. If the pattern is invalid (regex parse
   // failed), we fall through to showing all lines — that way the feed
   // doesn't vanish while the user is mid-edit on a regex.
-  const filteredLines = useMemo(() => {
-    if (!filterPattern || filterRegexError) return lines;
-    const caseSensitive = /[A-Z]/.test(filterPattern);
-    const finder = buildFinder(filterPattern, filterUseRegex, caseSensitive);
-    if (!finder) return lines;
-    return lines.filter((ln) => {
-      const hit = lineHasHit(ln, finder);
-      return filterNegate ? !hit : hit;
-    });
-  }, [lines, filterPattern, filterUseRegex, filterNegate, filterRegexError]);
+  //
+  // Computed inline (no useMemo) — 1000 rows × a string indexOf per row
+  // is sub-millisecond, and the React Compiler auto-memoizes re-renders
+  // when inputs don't change. Manual useMemo here tripped the compiler's
+  // preserve-memoization check.
+  const filterFinder =
+    !filterPattern || filterRegexError
+      ? null
+      : buildFinder(
+          filterPattern,
+          filterUseRegex,
+          /[A-Z]/.test(filterPattern),
+        );
+  const filteredLines = filterFinder
+    ? lines.filter((ln) => {
+        const hit = lineHasHit(ln, filterFinder);
+        return filterNegate ? !hit : hit;
+      })
+    : lines;
 
   // Search (`/pattern` in less) highlights hits within the *currently
   // visible* buffer — so /-searching after &-filtering is natural (search
@@ -219,24 +227,24 @@ export function TailTab({ querySearch, runCount }: Props) {
     return by;
   }, [matches]);
 
-  // Keep `currentMatch` in range as the match list churns (new rows arriving
-  // via polling, pattern edits, etc.). Snapping to 0 is the least surprising
-  // behaviour — matches the order less shows hits.
-  useEffect(() => {
-    if (currentMatch >= matches.length) setCurrentMatch(0);
-  }, [matches.length, currentMatch]);
+  // `currentMatch` is kept in range by clamping at read time rather than
+  // with a self-correcting effect — matches can churn with every poll, and
+  // a setState-in-effect triggers cascading renders the React Compiler lint
+  // rule flags. `safeMatchIdx` is what the render should use everywhere.
+  const safeMatchIdx =
+    matches.length === 0 ? 0 : currentMatch % matches.length;
 
   // Scroll the active match into the middle of the pane. Searching always
   // pauses follow so we don't fight auto-scroll on the next poll.
   useEffect(() => {
     if (!searchOpen || matches.length === 0) return;
-    const m = matches[currentMatch];
+    const m = matches[safeMatchIdx];
     if (!m) return;
     const el = scrollRef.current?.querySelector(
       `[data-line-idx="${m.lineIdx}"]`,
     ) as HTMLElement | null;
     el?.scrollIntoView({ block: "center" });
-  }, [currentMatch, matches, searchOpen]);
+  }, [safeMatchIdx, matches, searchOpen]);
 
   const openSearch = () => {
     setPromptMode("search");
@@ -385,7 +393,7 @@ export function TailTab({ querySearch, runCount }: Props) {
                 wrap={wrap}
                 showAttrs={showAttrs}
                 lineMatches={matchesByLine.get(idx) ?? EMPTY_LINE_MATCHES}
-                activeMatchIdx={currentMatch}
+                activeMatchIdx={safeMatchIdx}
                 searching={searchOpen && searchPattern.length > 0}
               />
             ))}
@@ -400,7 +408,7 @@ export function TailTab({ querySearch, runCount }: Props) {
           regexError: searchRegexError,
           inputRef: searchInputRef,
           matchCount: matches.length,
-          currentMatch,
+          currentMatch: safeMatchIdx,
           onPatternChange: setSearchPattern,
           onToggleRegex: () => setSearchUseRegex((r) => !r),
           onNext: nextMatch,
