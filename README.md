@@ -104,6 +104,11 @@ Four peer routes, all driven by the same query builder:
   catalog.
 - `/events` — the general explore page. Pick a dataset (spans, logs,
   or metrics) and drive any structured query from a single surface.
+- `/history` — recent queries, deduplicated. Every successful `/events`
+  query lands in a local `query_history` table keyed by a hash of the
+  AST (time range excluded), so repeats bump a run counter rather than
+  pile up new rows. Clicking an entry rehydrates the URL and re-runs
+  the query against its original time window.
 
 Every URL serialises the full query state (filters, group-by, aggregates,
 time range, granularity) so shared links reproduce the view.
