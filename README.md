@@ -85,6 +85,21 @@ go tool task build
 ./bin/waggle
 ```
 
+**`go install`** — headless server only (no embedded UI):
+
+```sh
+go install github.com/danielloader/waggle/cmd/waggle@latest
+waggle
+```
+
+The UI assets are built by Vite and embedded into the binary during the
+normal release / `go tool task build` flow. `go install` bypasses that
+step, so the resulting binary serves the OTLP/HTTP ingest endpoints and
+the `/api/*` surface, but `/` returns "UI not built". Handy for
+agent-like deployments where only the ingest + API are needed — and
+quick to bootstrap without Node. For the browser UI, use a release
+archive, Docker, or a full source build.
+
 Once running, open `http://localhost:4318` and point any OTLP/HTTP exporter
 (OpenTelemetry SDK defaults work) at the same URL.
 
