@@ -23,13 +23,9 @@ interface Props {
 
 /**
  * Events table. Sits below the chart and shows matching rows for the current
- * dataset + WHERE + time range. Rows render polymorphically based on each
- * row's `signal_type`: span rows show duration + status + trace link; log
- * rows show severity + body; metric rows show metric kind + value.
- *
- * When the current dataset is "events" (all signals) rows from different
- * signals mix naturally. When it's pinned to spans/logs/metrics the render
- * path is the same — every row simply carries the same signal_type.
+ * dataset + WHERE + time range. Rows render based on the dataset's row
+ * shape — span rows show duration + status + trace link; log rows show
+ * severity + body; metric rows show the folded attributes JSON.
  */
 export function EventsTable({ dataset, search, onScrollY }: Props) {
   const result = useQuery({

@@ -16,10 +16,10 @@ var keyPattern = regexp.MustCompile(`^[a-zA-Z0-9._\-/]+$`)
 // per-dataset whitelist; this is the coarse first line of defense.
 func (q *Query) Validate() error {
 	switch q.Dataset {
-	case DatasetSpans, DatasetLogs, DatasetMetrics, DatasetEvents:
+	case DatasetSpans, DatasetLogs, DatasetMetrics:
 	default:
-		return fmt.Errorf("dataset must be one of %q / %q / %q / %q, got %q",
-			DatasetSpans, DatasetLogs, DatasetMetrics, DatasetEvents, q.Dataset)
+		return fmt.Errorf("dataset must be one of %q / %q / %q, got %q",
+			DatasetSpans, DatasetLogs, DatasetMetrics, q.Dataset)
 	}
 	if q.TimeRange.From.IsZero() || q.TimeRange.To.IsZero() {
 		return fmt.Errorf("time_range.from and time_range.to are required")

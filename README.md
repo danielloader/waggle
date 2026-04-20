@@ -22,7 +22,8 @@ Local OpenTelemetry viewer inspired by Honeycomb — named for the
   field, so `MAX(requests.total)` resolves with plain SQL). WAL mode, FTS5
   for log/span-name search.
 - **Four peer surfaces:** `/traces`, `/logs`, `/metrics`, and `/events`
-  (cross-signal) — each driven by the same Honeycomb-style query builder.
+  (the general explore page) — each driven by the same Honeycomb-style
+  query builder.
 - **Per-chart controls.** Multi-`SELECT` queries render one chart per
   aggregation, each with its own Edit-chart popover (missing-values
   handling) and SI-suffixed y-axis.
@@ -34,7 +35,7 @@ The `/traces` Explore-Data tab — root spans for the last hour, filtered
 to `is_root = true`. Each row carries a SIGNAL pill, service name,
 operation name, duration, status, and a trace-id link that opens the
 waterfall. The dataset pill at the top-left switches between
-`spans`, `logs`, `metrics`, and the cross-signal `events` view.
+`spans`, `logs`, and `metrics`.
 
 ![Spans Explore Data, filtered to root spans](docs/traces-list.png)
 
@@ -101,8 +102,8 @@ Four peer routes, all driven by the same query builder:
   field: type `MAX(requests.total)` or `P99(memory.used_bytes)` in the
   Select cell. Field autocomplete pulls metric names from the attribute
   catalog.
-- `/events` — cross-signal view. Runs with no signal-type prefix, so
-  one query can slice across spans, logs, and metrics.
+- `/events` — the general explore page. Pick a dataset (spans, logs,
+  or metrics) and drive any structured query from a single surface.
 
 Every URL serialises the full query state (filters, group-by, aggregates,
 time range, granularity) so shared links reproduce the view.
