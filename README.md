@@ -164,6 +164,49 @@ explore chrome.
 Every URL serialises the full query state (filters, group-by, aggregates,
 time range, granularity) so shared links reproduce the view.
 
+### Tee logs to a terminal or file
+
+`--tee` mirrors incoming OTLP log records to a second output in a
+human-readable format — zerolog-style `console` by default, plus
+`logfmt` and `json`. It's a pure passthrough; SQLite is still
+authoritative and the UI is unchanged. Handy for two common shapes:
+
+**Watch logs in a terminal while you explore traces + metrics in the
+browser.** When a trace in the UI points at a service, you can often
+just glance at the tailing terminal to see *that* service's logs scroll
+past, without context-switching between panes.
+
+```sh
+# Colourised live feed, filtered to two services, WARN+ only
+waggle --tee - \
+  --tee-service api-gateway,payments \
+  --tee-severity warn
+```
+
+Colour is `auto` by default — on when stdout is a TTY and the format
+is `console`, off otherwise. Use `--tee-color always` if you're piping
+to `less -R` / `ccze`, or `never` to strip escapes unconditionally.
+
+**Save logs to disk for later investigation.** For long-running local
+sessions, or when you need a durable copy the SQLite retention sweep
+(`--retention 24h` by default) won't eventually drop. `logfmt` is
+grep/awk-friendly, `json` is jq-friendly.
+
+```sh
+# Rolling log file, logfmt (grep/awk-friendly)
+waggle --tee logs/waggle.logfmt --tee-format logfmt
+
+# NDJSON — one record per line, point jq at it
+waggle --tee logs/waggle.ndjson --tee-format json
+
+# Paginate a live feed through less with ANSI-aware paging
+waggle --tee - --tee-color always | less -R
+```
+
+Only log records are tee'd; spans and metrics go to SQLite as normal.
+The sink is best-effort — a write failure is logged once and the
+ingest path keeps going.
+
 ### Query model
 
 Following Honeycomb's *Metrics 2.0* mapping, a metric datapoint is an
@@ -197,6 +240,11 @@ All flags have matching environment variables. Flags take precedence.
 | `--retention` | `WAGGLE_RETENTION` | `24h` | Drop data older than this (Go duration; `0` disables). |
 | `--log-level` | `WAGGLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--dev` | — | `false` | Dev mode: do not serve embedded UI, do not open browser. |
+| `--tee` | `WAGGLE_TEE` | — | Mirror incoming log records to this path (`-` = stdout). See the Tee section above. |
+| `--tee-service` | `WAGGLE_TEE_SERVICE` | — | Comma-separated `service.name` allow-list. Omit for all services. |
+| `--tee-severity` | `WAGGLE_TEE_SEVERITY` | — | Severity floor: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
+| `--tee-format` | `WAGGLE_TEE_FORMAT` | `console` | `console` (zerolog-style), `logfmt`, or `json` (NDJSON). |
+| `--tee-color` | `WAGGLE_TEE_COLOR` | `auto` | ANSI colour for `console` format: `auto` (TTY-detect), `always`, `never`. |
 
 When `--ingest-addr` and `--ui-addr` differ, waggle binds two HTTP listeners;
 otherwise a single listener serves everything on `--addr`.

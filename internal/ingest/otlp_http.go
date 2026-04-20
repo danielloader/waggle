@@ -18,11 +18,19 @@ import (
 // Handler wires the OTLP ingest HTTP endpoints to the Writer.
 type Handler struct {
 	writer *Writer
+	tee    *Tee // optional log-mirror sink; nil = disabled
 	log    *slog.Logger
 }
 
 func NewHandler(w *Writer, log *slog.Logger) *Handler {
 	return &Handler{writer: w, log: log}
+}
+
+// WithTee attaches a log-mirror sink. Pass nil to keep tee disabled.
+// Chainable so the caller can write `NewHandler(...).WithTee(tee)`.
+func (h *Handler) WithTee(t *Tee) *Handler {
+	h.tee = t
+	return h
 }
 
 // Mount registers POST /v1/{traces,logs,metrics} on the given mux.
@@ -53,6 +61,10 @@ func (h *Handler) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	batch := otlp.TransformResourceLogs(req.ResourceLogs)
+	// Tee *before* enqueue so the mirror reflects the same records that
+	// were accepted, even if enqueue later returns backpressure-513.
+	// Tee is a no-op when not configured.
+	h.tee.WriteBatch(batch)
 	if !h.writer.Enqueue(batch) {
 		h.writeBackpressure(w, r, "logs")
 		return
