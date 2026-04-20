@@ -50,15 +50,7 @@ func (rt *Router) runQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cols := make([]store.QueryColumn, len(compiled.Columns))
-	for i, c := range compiled.Columns {
-		cols[i] = store.QueryColumn{Name: c.Name, Type: c.Type}
-	}
-	rates := make([]store.QueryRateSpec, len(compiled.Rates))
-	for i, r := range compiled.Rates {
-		rates[i] = store.QueryRateSpec{ColumnIndex: r.ColumnIndex, BucketSecs: r.BucketSecs}
-	}
-	res, err := rt.store.RunQuery(r.Context(), compiled.SQL, compiled.Args, cols, compiled.HasBucket, compiled.GroupKeys, rates)
+	res, err := rt.store.RunQuery(r.Context(), compiled.SQL, compiled.Args, compiled.Columns, compiled.HasBucket, compiled.GroupKeys, compiled.Rates)
 	if err != nil {
 		rt.writeError(w, err)
 		return

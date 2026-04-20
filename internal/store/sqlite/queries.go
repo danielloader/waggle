@@ -541,25 +541,17 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		byKey[fi.Key] = i
 	}
 
-	var (
-		q    string
-		args []any
-	)
-	if f.Service == "" {
-		q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
-			WHERE signal_type = ? AND key LIKE ? || '%'
-			GROUP BY key, value_type
-			ORDER BY c DESC, key ASC LIMIT ?`
-		args = []any{f.SignalType, f.Prefix, limit}
-	} else {
-		q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
-			WHERE signal_type = ? AND (service_name = ? OR service_name = '')
-			  AND key LIKE ? || '%'
-			GROUP BY key, value_type
-			ORDER BY c DESC, key ASC LIMIT ?`
-		args = []any{f.SignalType, f.Service, f.Prefix, limit}
-	}
-	rows, err := s.reader.QueryContext(ctx, q, args...)
+	// Service-scoped when f.Service is non-empty: include service-specific
+	// rows plus shared ones (service_name = ''). When empty, the sentinel
+	// clause `? = ''` is true and the whole filter passes, so we scan
+	// across all services with one query text.
+	const q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
+		WHERE signal_type = ?
+		  AND (? = '' OR service_name = ? OR service_name = '')
+		  AND key LIKE ? || '%'
+		GROUP BY key, value_type
+		ORDER BY c DESC, key ASC LIMIT ?`
+	rows, err := s.reader.QueryContext(ctx, q, f.SignalType, f.Service, f.Service, f.Prefix, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -654,23 +646,19 @@ func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]str
 		return s.listEventColumnValues(ctx, col, f, limit)
 	}
 
-	var (
-		q    string
-		args []any
-	)
-	if f.Service == "" {
-		q = `SELECT value FROM attribute_values
-			WHERE signal_type = ? AND key = ? AND value LIKE ? || '%'
-			GROUP BY value
-			ORDER BY SUM(count) DESC, value ASC LIMIT ?`
-		args = []any{f.SignalType, f.Key, f.Prefix, limit}
-	} else {
-		q = `SELECT value FROM attribute_values
-			WHERE signal_type = ? AND service_name = ? AND key = ? AND value LIKE ? || '%'
-			ORDER BY count DESC, value ASC LIMIT ?`
-		args = []any{f.SignalType, f.Service, f.Key, f.Prefix, limit}
-	}
-	rows, err := s.reader.QueryContext(ctx, q, args...)
+	// Same conditional-filter trick as ListFields: `? = ''` short-circuits
+	// the service clause when no service is supplied, so one query text
+	// handles both scopes. GROUP BY unifies the no-service case (values
+	// can appear across multiple services and need summing); when a
+	// service is pinned the primary key guarantees a single row per
+	// (key, value) so SUM(count) == count.
+	const q = `SELECT value FROM attribute_values
+		WHERE signal_type = ?
+		  AND (? = '' OR service_name = ?)
+		  AND key = ? AND value LIKE ? || '%'
+		GROUP BY value
+		ORDER BY SUM(count) DESC, value ASC LIMIT ?`
+	rows, err := s.reader.QueryContext(ctx, q, f.SignalType, f.Service, f.Service, f.Key, f.Prefix, limit)
 	if err != nil {
 		return nil, err
 	}

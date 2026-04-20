@@ -186,8 +186,11 @@ func (t *transformer) ingestResourceLogs(rl *logspb.ResourceLogs) {
 
 func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string, string) {
 	attrs, service, dataset, ns, ver, inst, sdkN, sdkL, sdkV := explodeResource(r)
-	id := hash64("res", canonicalJSON(attrs))
+	// attrsToJSON sorts keys (map iteration → json.Marshal), so the output
+	// is stable for equivalent attribute sets. Reuse it for both dedup-hash
+	// input and storage instead of serialising twice.
 	flat := attrsToJSON(attrs)
+	id := hash64("res", flat)
 
 	if _, ok := t.resources[id]; !ok {
 		t.resources[id] = store.Resource{
@@ -680,26 +683,6 @@ func explodeResource(r *resourcepb.Resource) (attrs []*commonpb.KeyValue, servic
 		dataset = service
 	}
 	return
-}
-
-func canonicalJSON(attrs []*commonpb.KeyValue) string {
-	m := attrsToMap(attrs)
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make(map[string]any, len(m))
-	var pairs []string
-	for _, k := range keys {
-		out[k] = m[k]
-		pairs = append(pairs, k)
-	}
-	raw, _ := json.Marshal(struct {
-		Keys   []string       `json:"_keys"`
-		Values map[string]any `json:"_values"`
-	}{pairs, out})
-	return string(raw)
 }
 
 func attrsToJSON(attrs []*commonpb.KeyValue) string {

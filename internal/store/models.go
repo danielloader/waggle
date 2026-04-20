@@ -1,6 +1,10 @@
 package store
 
-import "time"
+import (
+	"time"
+
+	"github.com/danielloader/waggle/internal/query"
+)
 
 // Resource is a deduplicated process/service identity extracted from an OTLP
 // ResourceSpans/ResourceLogs/ResourceMetrics envelope.
@@ -204,11 +208,13 @@ type FieldInfo struct {
 	Count     int64  `json:"count"`
 }
 
-// QueryColumn is the output of one select/group-by expression.
-type QueryColumn struct {
-	Name string `json:"name"`
-	Type string `json:"type"` // "string" | "int" | "float" | "bool" | "time"
-}
+// QueryColumn / QueryRateSpec are aliases of the query-builder types so
+// the executor can accept the builder's output directly — no struct-to-
+// struct copying in the HTTP handler.
+type (
+	QueryColumn   = query.Column
+	QueryRateSpec = query.RateSpec
+)
 
 // QueryResult is returned by Store.RunQuery.
 type QueryResult struct {
@@ -216,13 +222,6 @@ type QueryResult struct {
 	Rows      [][]any       `json:"rows"`
 	HasBucket bool          `json:"has_bucket"`
 	GroupKeys []string      `json:"group_keys,omitempty"`
-}
-
-// QueryRateSpec tells the executor which output columns must be transformed
-// into a per-second delta after scan.
-type QueryRateSpec struct {
-	ColumnIndex int
-	BucketSecs  float64
 }
 
 type LogOut struct {
