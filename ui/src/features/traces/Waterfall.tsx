@@ -450,10 +450,10 @@ function Row({
 
 /**
  * Whisker indicating clock skew on one side of the bar: a thin horizontal
- * wire just below the bar, a short drop connecting it to the bar's own
- * edge, and a vertical cap at the extreme descendant bound. Drawn with the
- * service colour at reduced opacity so it reads as "related to the bar
- * but not part of its reported duration".
+ * wire emerging from the bar's midline out to the extreme descendant
+ * bound, terminated by a vertical cap. Drawn with the service colour at
+ * reduced opacity so it reads as "related to the bar but not part of its
+ * reported duration".
  */
 function SkewWhisker({
   color,
@@ -468,15 +468,13 @@ function SkewWhisker({
   /** Right edge of the horizontal wire, as % of the timeline. */
   wireToPct: number;
 }) {
-  // Bar is drawn at top:8 height:10 (so bottom edge y=18). The wire sits
-  // 3px below with a 1px stroke, caps are 7px tall straddling the wire.
-  const wireTop = 21;
-  const capTop = 18;
+  // Bar is drawn at top:8 height:10 (midline y=13). Centre the wire and
+  // cap on that midline so the whisker reads as continuing straight out
+  // of the bar rather than branching below it.
+  const wireTop = 13;
+  const capTop = 10;
   const capHeight = 7;
-  const dropTop = 18;
-  const dropHeight = 4;
   const capPct = side === "left" ? wireFromPct : wireToPct;
-  const dropPct = side === "left" ? wireToPct : wireFromPct;
   const wireWidthPct = Math.max(wireToPct - wireFromPct, 0);
   return (
     <>
@@ -501,18 +499,6 @@ function SkewWhisker({
           background: color,
           opacity: 0.7,
           transform: "translateX(-50%)",
-        }}
-      />
-      <div
-        className="absolute"
-        style={{
-          left: `${dropPct}%`,
-          top: dropTop,
-          height: dropHeight,
-          width: 1,
-          background: color,
-          opacity: 0.5,
-          transform: side === "right" ? "translateX(-100%)" : undefined,
         }}
       />
     </>
