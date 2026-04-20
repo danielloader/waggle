@@ -23,38 +23,36 @@ explorer, metrics browser, and structured query builder in the same tab.
 
 ## Screenshots
 
-Honeycomb-style query builder over traces — filters, group-by, aggregates,
-time range, all serialized to the URL:
+The `/traces` Explore-Data tab — root spans for the last hour, filtered
+to `is_root = true`. Each row carries a SIGNAL pill, service name,
+operation name, duration, status, and a trace-id link that opens the
+waterfall. The dataset pill at the top-left switches between
+`spans`, `logs`, `metrics`, and the cross-signal `events` view.
 
-![Trace list with query header](docs/traces-list.png)
+![Spans Explore Data, filtered to root spans](docs/traces-list.png)
 
-Query builder in action — the screenshot below breaks down every HTTP
-operation in the last 6 hours by status code and span name. The Define
-row reads:
+The `/metrics` view with a multi-aggregation query: `MAX(memory.used_bytes)`,
+`AVG(cpu.utilization)`, `RATE_AVG(network.bytes_received)` grouped by
+`service.name`. Each `SELECT` item gets its own stacked chart with an
+independent y-axis (note SI-suffixed labels — `1.4G`, `600m`, `1.2M`)
+and a per-chart Edit popover for missing-values handling. The Overview
+tab below rolls each aggregation up into a single column. Metric names
+are queried as plain attribute fields — Honeycomb-style metric-name-as-field
+storage, no separate metric language to learn.
 
-- **Select** `COUNT` — how many spans match.
-- **Where** `http.response.status_code exists` — keep only spans that
-  carry an HTTP status, filtering out unrelated internal / DB work
-  *before* aggregation.
-- **Group by** `http.response.status_code, name` — split the count into
-  one row per (status × operation) pair so 200 POST /checkout and 500
-  GET /reports appear separately.
-- **Order by** `count desc` — noisiest combinations float to the top.
-- **Limit** `1000` — cap the result set.
+![Metrics dashboard with three stacked charts](docs/query-builder.png)
 
-The chart timeseries renders one line per group so error codes stand
-out against the 200s at a glance, and the Overview tab lists the raw
-rows ordered by volume.
+Trace waterfall with the span detail pane open. The right-hand
+attributes panel shows the `meta.*` namespace (`meta.dataset`,
+`meta.signal_type`, `meta.span_kind`, …) alongside user attributes —
+metadata waggle stamps at ingest is queryable like any other field.
 
-![Aggregation with group-by](docs/query-builder.png)
+![Trace waterfall with span detail](docs/trace-waterfall.png)
 
-Trace waterfall with per-span detail:
+The `/logs` Explore-Data tab — FTS5-indexed bodies with severity
+badges, service names, and trace-id correlation back to the waterfall.
 
-![Trace waterfall](docs/trace-waterfall.png)
-
-Log explorer with FTS5 search:
-
-![Log explorer](docs/logs.png)
+![Logs Explore Data with severity + trace correlation](docs/logs.png)
 
 ## Install
 
