@@ -3,8 +3,9 @@ import type { Dataset, QuerySearch } from "../../lib/query";
 import { OverviewTab } from "./OverviewTab";
 import { EventsTable, type SelectedRow } from "./EventsTable";
 import { TracesTab } from "./TracesTab";
+import { TailTab } from "./TailTab";
 
-type TabID = "overview" | "traces" | "explore";
+type TabID = "overview" | "traces" | "explore" | "tail";
 
 interface Props {
   dataset: Dataset;
@@ -33,10 +34,12 @@ type Tab = { id: TabID; label: string; datasets?: Dataset[] };
 
 // The Traces tab only makes sense on the spans dataset — it's top-N by
 // root-span duration. Logs don't have a trace/root concept we can sort by.
+// Tail is logs-only — the terminal-style focused follow view.
 const TABS: Tab[] = [
   { id: "overview", label: "Overview" },
   { id: "traces", label: "Traces", datasets: ["spans"] },
   { id: "explore", label: "Explore Data" },
+  { id: "tail", label: "Tail", datasets: ["logs"] },
 ];
 
 /**
@@ -115,6 +118,9 @@ export function ResultTabs({
             selected={selectedRow ?? null}
             onSelect={onSelectRow}
           />
+        )}
+        {active === "tail" && (
+          <TailTab querySearch={querySearch} runCount={runCount} />
         )}
       </div>
     </div>

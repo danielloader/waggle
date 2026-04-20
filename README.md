@@ -62,6 +62,18 @@ badges, service names, and trace-id correlation back to the waterfall.
 
 ![Logs Explore Data with severity + trace correlation](docs/logs.png)
 
+The logs **Tail** tab — `less`-style focused follow view. Query and
+chart collapse out of the way so the feed fills the pane. Lines render
+in a zerolog-inspired console format: bold severity pill, white body,
+cyan `key=` with logfmt-style values, and bold-red highlights for
+common error attributes (`error`, `exception.message`, `exception.type`,
+…) on ERROR-level rows. ANSI SGR escapes in log bodies are honoured.
+Polls while Following is on; scrolling up pauses follow, Jump resumes.
+The Copy button writes the visible buffer to the clipboard as plain
+text, ANSI stripped.
+
+![Tail tab — terminal-style follow view](docs/logs-tail.png)
+
 ## Install
 
 **Binary** — grab a release archive from

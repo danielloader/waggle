@@ -401,8 +401,9 @@ export const querySearchSchema = z.object({
   // Active tab under the chart. "overview" is the cheap default — it rolls
   // the aggregation up across the time range. "traces" shows top-N slowest
   // root spans (spans dataset only). "explore" loads raw events, which is
-  // deliberately lazy because it's the heavier query.
-  tab: z.enum(["overview", "traces", "explore"]).default("overview"),
+  // deliberately lazy because it's the heavier query. "tail" is a logs-only
+  // focused view — full-bleed dark terminal that auto-follows new rows.
+  tab: z.enum(["overview", "traces", "explore", "tail"]).default("overview"),
   // Auto-refresh cadence for chart + events queries. Off by default so
   // loaded URLs don't re-hit the backend unexpectedly — users opt in via
   // the time-range picker when they want live behaviour. For a preset
