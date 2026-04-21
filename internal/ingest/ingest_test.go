@@ -14,9 +14,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
-	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/danielloader/waggle/internal/ingest"
@@ -63,7 +63,7 @@ func TestIngestProtobufRoundTrip(t *testing.T) {
 				Scope: &commonpb.InstrumentationScope{Name: "lib", Version: "1.0"},
 				Spans: []*tracepb.Span{{
 					TraceId: traceID, SpanId: spanID, Name: "POST /checkout",
-					Kind: tracepb.Span_SPAN_KIND_SERVER,
+					Kind:              tracepb.Span_SPAN_KIND_SERVER,
 					StartTimeUnixNano: uint64(time.Now().UnixNano()),
 					EndTimeUnixNano:   uint64(time.Now().Add(100 * time.Millisecond).UnixNano()),
 					Status:            &tracepb.Status{Code: tracepb.Status_STATUS_CODE_OK},

@@ -42,12 +42,12 @@ const (
 // carry signal-specific data; meta.signal_type in AttributesJSON tells
 // the reader which.
 type Event struct {
-	TimeNS         int64
-	EndTimeNS      *int64 // spans only
-	ResourceID     uint64
-	ScopeID        uint64
-	ServiceName    string
-	Name           string
+	TimeNS      int64
+	EndTimeNS   *int64 // spans only
+	ResourceID  uint64
+	ScopeID     uint64
+	ServiceName string
+	Name        string
 
 	TraceID      []byte
 	SpanID       []byte

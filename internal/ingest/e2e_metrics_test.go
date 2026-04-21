@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	semattr "go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
-	semattr "go.opentelemetry.io/otel/attribute"
 )
 
 func (f *e2eFixture) meterProvider(service string) *sdkmetric.MeterProvider {

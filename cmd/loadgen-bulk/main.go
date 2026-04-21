@@ -91,13 +91,13 @@ func i64p(v int64) *int64   { return &v }
 func u32p(v uint32) *uint32 { return &v }
 
 func main() {
-	dbPath   := flag.String("db", "./waggle-test.db", "Output SQLite database path")
-	nTotal   := flag.Int("total", 10_000_000, "Total number of events to generate")
-	batchSz  := flag.Int("batch-size", 2_000, "Events per write batch")
+	dbPath := flag.String("db", "./waggle-test.db", "Output SQLite database path")
+	nTotal := flag.Int("total", 10_000_000, "Total number of events to generate")
+	batchSz := flag.Int("batch-size", 2_000, "Events per write batch")
 	seedFlag := flag.Uint64("seed", 0, "Random seed (0 = time-based)")
-	win      := flag.Duration("window", 24*time.Hour, "Time window for event timestamps")
+	win := flag.Duration("window", 24*time.Hour, "Time window for event timestamps")
 	spansPct := flag.Int("spans-pct", 60, "Percentage of events that are spans")
-	logsPct  := flag.Int("logs-pct", 10, "Percentage of events that are logs")
+	logsPct := flag.Int("logs-pct", 10, "Percentage of events that are logs")
 	flag.Parse()
 
 	if *spansPct+*logsPct > 100 {
@@ -110,8 +110,8 @@ func main() {
 	}
 	rng := rand.New(rand.NewPCG(s, s^0xdeadbeefcafebabe))
 
-	numSpans   := *nTotal * *spansPct / 100
-	numLogs    := *nTotal * *logsPct / 100
+	numSpans := *nTotal * *spansPct / 100
+	numLogs := *nTotal * *logsPct / 100
 	numMetrics := *nTotal - numSpans - numLogs
 	log.Printf("loadgen-bulk: db=%s  spans=%d  logs=%d  metrics=%d  total=%d",
 		*dbPath, numSpans, numLogs, numMetrics, numSpans+numLogs+numMetrics)
@@ -373,16 +373,16 @@ func main() {
 		}
 
 		batch.Events = append(batch.Events, store.Event{
-			TimeNS:        rootTimeNS,
-			EndTimeNS:     i64p(rootEnd),
-			ResourceID:    root.resourceID,
-			ScopeID:       root.scopeID,
-			ServiceName:   root.serviceName,
-			Name:          method + " " + route,
-			TraceID:       traceID,
-			SpanID:        rootSpanID,
-			StatusCode:    i32p(rootStatus),
-			Flags:         u32p(1),
+			TimeNS:         rootTimeNS,
+			EndTimeNS:      i64p(rootEnd),
+			ResourceID:     root.resourceID,
+			ScopeID:        root.scopeID,
+			ServiceName:    root.serviceName,
+			Name:           method + " " + route,
+			TraceID:        traceID,
+			SpanID:         rootSpanID,
+			StatusCode:     i32p(rootStatus),
+			Flags:          u32p(1),
 			AttributesJSON: httpSpanAttrs(root.serviceName, "SERVER", method, route, httpCode),
 		})
 

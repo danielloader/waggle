@@ -541,7 +541,7 @@ func emitRetryingRequest(ctx context.Context, tracers Tracers, loggers Loggers) 
 	)
 	defer span.End()
 
-	maxAttempts := 2 + rand.IntN(3) // 2–4 attempts
+	maxAttempts := 2 + rand.IntN(3)         // 2–4 attempts
 	succeedOn := rand.IntN(maxAttempts + 1) // might succeed on any attempt, or never
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -558,7 +558,7 @@ func emitRetryingRequest(ctx context.Context, tracers Tracers, loggers Loggers) 
 			return nil
 		}
 
-		backoff := time.Duration((1 << attempt) * 5) * time.Millisecond
+		backoff := time.Duration((1<<attempt)*5) * time.Millisecond
 		span.AddEvent("http.request.failed", trace.WithAttributes(
 			attribute.Int("retry.attempt", attempt),
 			attribute.Int("http.response.status_code", 503),

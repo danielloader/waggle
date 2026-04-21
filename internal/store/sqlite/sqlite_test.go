@@ -54,8 +54,8 @@ func TestWriteAndReadSpan(t *testing.T) {
 			ResourceID: 1, ScopeID: 1,
 			ServiceName: "test", Name: "root",
 			TraceID: tid, SpanID: sid,
-			StatusCode: &statusCode,
-			Flags:      &zeroFlags,
+			StatusCode:     &statusCode,
+			Flags:          &zeroFlags,
 			AttributesJSON: `{"meta.signal_type":"span","meta.span_kind":"INTERNAL","http.route":"/x","http.response.status_code":200}`,
 		}},
 		AttrKeys: []store.AttrKeyDelta{

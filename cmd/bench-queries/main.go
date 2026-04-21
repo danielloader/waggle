@@ -28,7 +28,7 @@ type queryCase struct {
 
 func main() {
 	dbPath := flag.String("db", "./waggle-test.db", "SQLite database path")
-	runs    := flag.Int("runs", 3, "Number of runs per query (median reported)")
+	runs := flag.Int("runs", 3, "Number of runs per query (median reported)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -47,8 +47,8 @@ func main() {
 		log.Fatalf("scan time bounds: %v", err)
 	}
 	spanNS := maxNS - minNS
-	midNS  := minNS + spanNS/2
-	qtrNS  := spanNS / 4
+	midNS := minNS + spanNS/2
+	qtrNS := spanNS / 4
 
 	// Bucket size: 1-hour buckets (in nanoseconds) for time-series queries.
 	const hourNS = int64(time.Hour)

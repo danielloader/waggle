@@ -22,13 +22,13 @@ import (
 // overwritten at ingest with the system-computed value. Non-whitelisted
 // meta.foo user keys pass through untouched.
 var reservedMetaKeys = map[string]struct{}{
-	"meta.signal_type":       {},
-	"meta.annotation_type":   {},
-	"meta.span_kind":         {},
-	"meta.metric_kind":       {},
-	"meta.metric_unit":       {},
+	"meta.signal_type":        {},
+	"meta.annotation_type":    {},
+	"meta.span_kind":          {},
+	"meta.metric_kind":        {},
+	"meta.metric_unit":        {},
 	"meta.metric_temporality": {},
-	"meta.metric_monotonic":  {},
+	"meta.metric_monotonic":   {},
 }
 
 // TransformResourceSpans converts an OTLP ExportTraceServiceRequest-level

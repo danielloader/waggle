@@ -32,27 +32,27 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	otelmetric "go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func main() {
 	var (
-		endpoint       = flag.String("endpoint", "127.0.0.1:4318", "OTLP/HTTP host:port to send to")
-		insecure       = flag.Bool("insecure", true, "Use http:// instead of https://")
+		endpoint        = flag.String("endpoint", "127.0.0.1:4318", "OTLP/HTTP host:port to send to")
+		insecure        = flag.Bool("insecure", true, "Use http:// instead of https://")
 		rate            = flag.Float64("rate", 5.0, "Target traces emitted per second (0 disables)")
 		logsRate        = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
 		metricsEnable   = flag.Bool("metrics", true, "Emit demo metrics (requests.total counter + host-like gauges per service)")
 		metricsRate     = flag.Float64("metrics-rate", 20, "Counter bumps per second across all services (0 keeps gauges only)")
 		metricsInterval = flag.Duration("metrics-interval", time.Second, "Metric export cadence (the OTel PeriodicReader interval)")
-		jitter         = flag.Float64("jitter", 0.3, "Fraction of the inter-trace period to randomize [0.0–1.0]")
-		duration       = flag.Duration("duration", 0, "How long to run (0 = until Ctrl-C)")
-		servicesFlag   = flag.String("services", "", "Comma-separated service names to emit (default: all templates)")
-		listTemplates  = flag.Bool("list", false, "List the built-in trace templates and exit")
-		parallelism    = flag.Int("parallelism", 4, "Number of concurrent trace emitters")
-		logInterval    = flag.Duration("log-every", 2*time.Second, "How often to log throughput stats")
+		jitter          = flag.Float64("jitter", 0.3, "Fraction of the inter-trace period to randomize [0.0–1.0]")
+		duration        = flag.Duration("duration", 0, "How long to run (0 = until Ctrl-C)")
+		servicesFlag    = flag.String("services", "", "Comma-separated service names to emit (default: all templates)")
+		listTemplates   = flag.Bool("list", false, "List the built-in trace templates and exit")
+		parallelism     = flag.Int("parallelism", 4, "Number of concurrent trace emitters")
+		logInterval     = flag.Duration("log-every", 2*time.Second, "How often to log throughput stats")
 	)
 	flag.Parse()
 
@@ -619,4 +619,3 @@ func init() {
 		}
 	}
 }
-

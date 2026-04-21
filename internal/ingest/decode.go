@@ -11,14 +11,14 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 const (
-	maxCompressedBytes   = 10 * 1024 * 1024  // 10 MiB
-	maxDecompressedBytes = 50 * 1024 * 1024  // 50 MiB
+	maxCompressedBytes   = 10 * 1024 * 1024 // 10 MiB
+	maxDecompressedBytes = 50 * 1024 * 1024 // 50 MiB
 )
 
 var errUnsupportedContentType = errors.New("unsupported content-type")

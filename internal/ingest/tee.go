@@ -287,11 +287,11 @@ func isErrorAttrKey(k string) bool {
 const (
 	// CSI m codes. Semicolon-joined inside a single ESC[...m for
 	// combined attributes (e.g. "31;1" = red + bold).
-	ansiTime       = "90"    // bright black (grey)
-	ansiService    = "37;2"  // white, dim
-	ansiBody       = "1"     // bold (keeps default fg = white)
-	ansiKey        = "36"    // cyan
-	ansiErrorValue = "31;1"  // red, bold
+	ansiTime       = "90"   // bright black (grey)
+	ansiService    = "37;2" // white, dim
+	ansiBody       = "1"    // bold (keeps default fg = white)
+	ansiKey        = "36"   // cyan
+	ansiErrorValue = "31;1" // red, bold
 	csiReset       = "\x1b[0m"
 )
 

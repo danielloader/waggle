@@ -96,9 +96,9 @@ type Aggregation struct {
 type AggOp string
 
 const (
-	OpCount         AggOp = "count"           // COUNT(*)
-	OpCountField    AggOp = "count_field"     // COUNT(field) — rows where field IS NOT NULL
-	OpCountDistinct AggOp = "count_distinct"  // COUNT(DISTINCT field)
+	OpCount         AggOp = "count"          // COUNT(*)
+	OpCountField    AggOp = "count_field"    // COUNT(field) — rows where field IS NOT NULL
+	OpCountDistinct AggOp = "count_distinct" // COUNT(DISTINCT field)
 	OpSum           AggOp = "sum"
 	OpAvg           AggOp = "avg"
 	OpMin           AggOp = "min"
@@ -161,9 +161,9 @@ func isPercentileOp(op AggOp) bool {
 
 // Filter is one WHERE/HAVING predicate.
 type Filter struct {
-	Field string     `json:"field"`
-	Op    FilterOp   `json:"op"`
-	Value any        `json:"value,omitempty"`
+	Field string   `json:"field"`
+	Op    FilterOp `json:"op"`
+	Value any      `json:"value,omitempty"`
 }
 
 // FilterOp is the comparison operator. For SQL codegen, the equality-style
