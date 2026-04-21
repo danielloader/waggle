@@ -412,9 +412,7 @@ func main() {
 	fmt.Println(strings.Repeat("=", 110))
 	fmt.Println("QUERY BENCHMARK SUMMARY")
 	fmt.Println(strings.Repeat("=", 110))
-	w := tabwriter.NewWriter(nil, 0, 0, 2, ' ', 0)
-	w = tabwriter.NewWriter(
-		// Wrap to stdout
+	w := tabwriter.NewWriter(
 		writerFn(func(p []byte) (int, error) { fmt.Print(string(p)); return len(p), nil }),
 		0, 0, 2, ' ', 0,
 	)

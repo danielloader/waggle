@@ -77,7 +77,7 @@ func NewTee(cfg TeeConfig) (*Tee, error) {
 		w = f
 		closer = f
 	}
-	f := teeConsole
+	var f teeFormat
 	switch strings.ToLower(cfg.Format) {
 	case "", "console":
 		f = teeConsole
