@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AlertTriangle, Link as LinkIcon } from "lucide-react";
 import clsx from "clsx";
@@ -78,6 +78,33 @@ export function Waterfall({
     rowVirtualizer.scrollToIndex(idx, { align: "center" });
   }, [scrollToSpanID, rows, rowVirtualizer]);
 
+  const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
+
+  // For the hovered span, compute the bounding box of its subtree in both
+  // timeline coordinates (min bar start → max bar end, in ns) and row
+  // coordinates (first row index → last row index). Rendered as a single
+  // overlay rectangle confined to the timeline area.
+  const subtreeBox = useMemo(() => {
+    if (!hoveredSpanId) return null;
+    const hoveredRow = rows.find((r) => r.span.span_id === hoveredSpanId);
+    if (!hoveredRow) return null;
+    const hp = hoveredRow.path;
+
+    let firstIdx = -1, lastIdx = -1;
+    let minOffsetNS = Infinity, maxEndNS = -Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (r.path === hp || r.path.startsWith(hp + ".")) {
+        if (firstIdx === -1) firstIdx = i;
+        lastIdx = i;
+        minOffsetNS = Math.min(minOffsetNS, r.offsetNS);
+        maxEndNS = Math.max(maxEndNS, r.offsetNS + r.durationNS);
+      }
+    }
+    if (firstIdx === -1) return null;
+    return { firstIdx, lastIdx, minOffsetNS, maxEndNS };
+  }, [hoveredSpanId, rows]);
+
   // Measured timeline pixel width — drives the label-placement heuristic in
   // each Row. We need real pixels (not percentages) to decide whether a
   // duration label will fit inside its bar.
@@ -116,6 +143,31 @@ export function Waterfall({
             width: "100%",
           }}
         >
+          {/* Subtree bounding box — timeline-scoped rect covering the temporal
+              and vertical extent of the hovered span + all its descendants.
+              Rendered before rows so it sits behind the bar and label content. */}
+          {subtreeBox && timelineWidthPx > 0 && (
+            <div
+              className="absolute pointer-events-none rounded-sm"
+              style={(() => {
+                const PAD = 5;
+                const barLeft = (subtreeBox.minOffsetNS / traceDurNS) * timelineWidthPx;
+                const barWidth = Math.max(
+                  2,
+                  ((subtreeBox.maxEndNS - subtreeBox.minOffsetNS) / traceDurNS) * timelineWidthPx,
+                );
+                return {
+                  top: subtreeBox.firstIdx * ROW_HEIGHT,
+                  height: (subtreeBox.lastIdx - subtreeBox.firstIdx + 1) * ROW_HEIGHT,
+                  left: NAME_COL + SERVICE_COL + 8 + barLeft - PAD,
+                  width: barWidth + PAD * 2,
+                  background: "color-mix(in srgb, var(--color-accent) 5%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                  zIndex: 5,
+                };
+              })()}
+            />
+          )}
           {rowVirtualizer.getVirtualItems().map((vr) => {
             const row = rows[vr.index];
             return (
@@ -134,6 +186,7 @@ export function Waterfall({
                 isAltRow={vr.index % 2 === 1}
                 onSelect={onSelect}
                 onToggleCollapse={onToggleCollapse}
+                onHover={setHoveredSpanId}
                 onSelectEvent={onSelectEvent}
                 onSelectLinks={onSelectLinks}
               />
@@ -214,6 +267,7 @@ interface RowProps {
   isAltRow: boolean;
   onSelect: (spanID: string) => void;
   onToggleCollapse: (spanID: string) => void;
+  onHover: (spanID: string | null) => void;
   onSelectEvent?: (spanID: string, eventIdx: number) => void;
   onSelectLinks?: (spanID: string) => void;
 }
@@ -230,6 +284,7 @@ function Row({
   isAltRow,
   onSelect,
   onToggleCollapse,
+  onHover,
   onSelectEvent,
   onSelectLinks,
 }: RowProps) {
@@ -304,9 +359,7 @@ function Row({
       style={{
         top,
         height: ROW_HEIGHT,
-        // Precedence: selection → search highlight → zebra stripe. The
-        // stripe is a subtle tick so the eye can track a long row across
-        // the full-width timeline without losing its place.
+        // Precedence: selection → search highlight → zebra stripe.
         background: isSelected
           ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
           : isHighlighted
@@ -316,6 +369,7 @@ function Row({
               : undefined,
       }}
       onClick={() => onSelect(row.span.span_id)}
+      onMouseLeave={() => onHover(null)}
     >
       <div
         className="shrink-0 flex items-center gap-1 pr-2"
@@ -376,7 +430,7 @@ function Row({
       >
         {row.span.service_name}
       </div>
-      <div className="flex-1 h-full px-2">
+      <div className="flex-1 h-full px-2" onMouseEnter={() => onHover(row.span.span_id)}>
         {/* Percentages on the absolute children below are anchored to this
             inner div's width. Keeping the `px-2` on the outer wrapper
             means percentages land inside the padded area instead of
