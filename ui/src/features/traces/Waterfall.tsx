@@ -79,26 +79,31 @@ export function Waterfall({
   }, [scrollToSpanID, rows, rowVirtualizer]);
 
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
-  // Path of the hovered span — used to detect subtree membership below.
-  const hoveredPath = hoveredSpanId
-    ? (rows.find((r) => r.span.span_id === hoveredSpanId)?.path ?? null)
-    : null;
 
-  // Bounding box (in virtual-scroll coordinates) for the hovered span and all
-  // its visible descendants. Rendered as a single overlay rect behind the rows.
+  // For the hovered span, compute the bounding box of its subtree in both
+  // timeline coordinates (min bar start → max bar end, in ns) and row
+  // coordinates (first row index → last row index). Rendered as a single
+  // overlay rectangle confined to the timeline area.
   const subtreeBox = useMemo(() => {
-    if (!hoveredPath) return null;
-    let first = -1, last = -1;
+    if (!hoveredSpanId) return null;
+    const hoveredRow = rows.find((r) => r.span.span_id === hoveredSpanId);
+    if (!hoveredRow) return null;
+    const hp = hoveredRow.path;
+
+    let firstIdx = -1, lastIdx = -1;
+    let minOffsetNS = Infinity, maxEndNS = -Infinity;
     for (let i = 0; i < rows.length; i++) {
-      const p = rows[i].path;
-      if (p === hoveredPath || p.startsWith(hoveredPath + ".")) {
-        if (first === -1) first = i;
-        last = i;
+      const r = rows[i];
+      if (r.path === hp || r.path.startsWith(hp + ".")) {
+        if (firstIdx === -1) firstIdx = i;
+        lastIdx = i;
+        minOffsetNS = Math.min(minOffsetNS, r.offsetNS);
+        maxEndNS = Math.max(maxEndNS, r.offsetNS + r.durationNS);
       }
     }
-    if (first === -1) return null;
-    return { top: first * ROW_HEIGHT, height: (last - first + 1) * ROW_HEIGHT };
-  }, [hoveredPath, rows]);
+    if (firstIdx === -1) return null;
+    return { firstIdx, lastIdx, minOffsetNS, maxEndNS };
+  }, [hoveredSpanId, rows]);
 
   // Measured timeline pixel width — drives the label-placement heuristic in
   // each Row. We need real pixels (not percentages) to decide whether a
@@ -138,15 +143,30 @@ export function Waterfall({
             width: "100%",
           }}
         >
-          {/* Subtree bounding box — rendered before rows so it sits behind them */}
-          {subtreeBox && (
+          {/* Subtree bounding box — timeline-scoped rect covering the temporal
+              and vertical extent of the hovered span + all its descendants.
+              Rendered before rows so it sits behind the bar and label content. */}
+          {subtreeBox && timelineWidthPx > 0 && (
             <div
-              className="absolute left-0 right-0 pointer-events-none"
+              className="absolute pointer-events-none rounded-sm"
               style={{
-                top: subtreeBox.top,
-                height: subtreeBox.height,
-                background: "color-mix(in srgb, var(--color-accent) 7%, transparent)",
-                boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                top: subtreeBox.firstIdx * ROW_HEIGHT,
+                height: (subtreeBox.lastIdx - subtreeBox.firstIdx + 1) * ROW_HEIGHT,
+                // Horizontal position is inside the timeline area only.
+                // NAME_COL + SERVICE_COL + 8px (px-2 left pad) = start of usable timeline.
+                left:
+                  NAME_COL +
+                  SERVICE_COL +
+                  8 +
+                  (subtreeBox.minOffsetNS / traceDurNS) * timelineWidthPx,
+                width: Math.max(
+                  2,
+                  ((subtreeBox.maxEndNS - subtreeBox.minOffsetNS) / traceDurNS) *
+                    timelineWidthPx,
+                ),
+                background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-accent) 28%, transparent)",
+                zIndex: 5,
               }}
             />
           )}
@@ -351,7 +371,6 @@ function Row({
               : undefined,
       }}
       onClick={() => onSelect(row.span.span_id)}
-      onMouseEnter={() => onHover(row.span.span_id)}
       onMouseLeave={() => onHover(null)}
     >
       <div
@@ -413,7 +432,7 @@ function Row({
       >
         {row.span.service_name}
       </div>
-      <div className="flex-1 h-full px-2">
+      <div className="flex-1 h-full px-2" onMouseEnter={() => onHover(row.span.span_id)}>
         {/* Percentages on the absolute children below are anchored to this
             inner div's width. Keeping the `px-2` on the outer wrapper
             means percentages land inside the padded area instead of
