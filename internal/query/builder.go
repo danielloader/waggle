@@ -237,37 +237,9 @@ func (b *builder) build() (Compiled, error) {
 	}
 
 	// 3) Aggregations
-	var rates []RateSpec
-	bucketSecs := float64(b.q.BucketMS) / 1000.0
-	for _, a := range b.q.Select {
-		// Rate ops share codegen with their underlying aggregation; the
-		// per-second delta is applied by the executor after scan. Preserve
-		// the user-visible alias so the rate column is named correctly.
-		if isRateOp(a.Op) {
-			underlying := Aggregation{Op: rateUnderlying[a.Op], Field: a.Field, Alias: a.Alias}
-			aggSQL, _, err := b.aggregation(underlying)
-			if err != nil {
-				return Compiled{}, err
-			}
-			alias := a.Alias
-			if alias == "" {
-				alias = defaultAggAlias(a)
-			}
-			colIdx := len(b.cols)
-			b.addSelect(aggSQL, alias, "float")
-			rates = append(rates, RateSpec{ColumnIndex: colIdx, BucketSecs: bucketSecs})
-			continue
-		}
-
-		aggSQL, aggType, err := b.aggregation(a)
-		if err != nil {
-			return Compiled{}, err
-		}
-		alias := a.Alias
-		if alias == "" {
-			alias = defaultAggAlias(a)
-		}
-		b.addSelect(aggSQL, alias, aggType)
+	rates, err := b.buildAggregations()
+	if err != nil {
+		return Compiled{}, err
 	}
 
 	// 4) WHERE
@@ -299,40 +271,13 @@ func (b *builder) build() (Compiled, error) {
 	}
 
 	// 5) HAVING
-	if len(b.q.Having) > 0 {
-		havingParts := make([]string, 0, len(b.q.Having))
-		for _, f := range b.q.Having {
-			clause, err := b.havingFilter(f)
-			if err != nil {
-				return Compiled{}, err
-			}
-			havingParts = append(havingParts, clause)
-		}
-		sql.WriteString(" HAVING ")
-		sql.WriteString(strings.Join(havingParts, " AND "))
+	if err := b.buildHavingSQL(&sql); err != nil {
+		return Compiled{}, err
 	}
 
 	// 6) ORDER BY
-	orderParts := []string{}
-	if b.hasBucket {
-		// Time-bucketed queries must always order by time first so the
-		// series points come back in order.
-		orderParts = append(orderParts, "bucket_ns ASC")
-	}
-	for _, o := range b.q.OrderBy {
-		dir := "DESC"
-		if o.Dir == "asc" {
-			dir = "ASC"
-		}
-		expr, err := b.resolveOrderField(o.Field)
-		if err != nil {
-			return Compiled{}, err
-		}
-		orderParts = append(orderParts, expr+" "+dir)
-	}
-	if len(orderParts) > 0 {
-		sql.WriteString(" ORDER BY ")
-		sql.WriteString(strings.Join(orderParts, ", "))
+	if err := b.buildOrderBySQL(&sql); err != nil {
+		return Compiled{}, err
 	}
 
 	// 7) LIMIT (default 1000 if unspecified; clamped at 10k by Validate)
@@ -351,6 +296,83 @@ func (b *builder) build() (Compiled, error) {
 		GroupKeys: b.groupKeys[min(len(b.groupKeys), iff(b.hasBucket, 1, 0)):],
 		Rates:     rates,
 	}, nil
+}
+
+func (b *builder) buildAggregations() ([]RateSpec, error) {
+	var rates []RateSpec
+	bucketSecs := float64(b.q.BucketMS) / 1000.0
+	for _, a := range b.q.Select {
+		// Rate ops share codegen with their underlying aggregation; the
+		// per-second delta is applied by the executor after scan. Preserve
+		// the user-visible alias so the rate column is named correctly.
+		if isRateOp(a.Op) {
+			underlying := Aggregation{Op: rateUnderlying[a.Op], Field: a.Field, Alias: a.Alias}
+			aggSQL, _, err := b.aggregation(underlying)
+			if err != nil {
+				return nil, err
+			}
+			alias := a.Alias
+			if alias == "" {
+				alias = defaultAggAlias(a)
+			}
+			colIdx := len(b.cols)
+			b.addSelect(aggSQL, alias, "float")
+			rates = append(rates, RateSpec{ColumnIndex: colIdx, BucketSecs: bucketSecs})
+			continue
+		}
+		aggSQL, aggType, err := b.aggregation(a)
+		if err != nil {
+			return nil, err
+		}
+		alias := a.Alias
+		if alias == "" {
+			alias = defaultAggAlias(a)
+		}
+		b.addSelect(aggSQL, alias, aggType)
+	}
+	return rates, nil
+}
+
+func (b *builder) buildHavingSQL(sql *strings.Builder) error {
+	if len(b.q.Having) == 0 {
+		return nil
+	}
+	havingParts := make([]string, 0, len(b.q.Having))
+	for _, f := range b.q.Having {
+		clause, err := b.havingFilter(f)
+		if err != nil {
+			return err
+		}
+		havingParts = append(havingParts, clause)
+	}
+	sql.WriteString(" HAVING ")
+	sql.WriteString(strings.Join(havingParts, " AND "))
+	return nil
+}
+
+func (b *builder) buildOrderBySQL(sql *strings.Builder) error {
+	orderParts := []string{}
+	if b.hasBucket {
+		// Time-bucketed queries must always order by time first so the
+		// series points come back in order.
+		orderParts = append(orderParts, "bucket_ns ASC")
+	}
+	for _, o := range b.q.OrderBy {
+		dir := "DESC"
+		if o.Dir == "asc" {
+			dir = "ASC"
+		}
+		expr, err := b.resolveOrderField(o.Field)
+		if err != nil {
+			return err
+		}
+		orderParts = append(orderParts, expr+" "+dir)
+	}
+	if len(orderParts) > 0 {
+		sql.WriteString(" ORDER BY ")
+		sql.WriteString(strings.Join(orderParts, ", "))
+	}
+	return nil
 }
 
 // resolvedField is the SQL expression + inferred value type for a user-facing
@@ -388,7 +410,30 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 // signals — name, service.name, trace_id, http.route, etc. all live in the
 // same columns regardless of signal type.
 func (b *builder) realColumn(name string) (resolvedField, bool) {
-	// Columns present on BOTH events and metric_events.
+	if col, ok := commonRealColumn(name); ok {
+		return col, true
+	}
+	// Metric queries run against metric_events which doesn't have the
+	// span/log-specific columns. Everything else falls through to a
+	// json_extract on attributes — including metric-name keys like
+	// "requests.total" which the user references as first-class fields.
+	if b.q.Dataset == DatasetMetrics {
+		return resolvedField{}, false
+	}
+	if col, ok := eventsRealColumn(name); ok {
+		return col, true
+	}
+	switch b.q.Dataset {
+	case DatasetSpans:
+		return spanRealColumn(name)
+	case DatasetLogs:
+		return logRealColumn(name)
+	}
+	return resolvedField{}, false
+}
+
+// commonRealColumn resolves fields present on both events and metric_events.
+func commonRealColumn(name string) (resolvedField, bool) {
 	switch name {
 	case "service.name":
 		return resolvedField{SQL: "service_name", Type: "string"}, true
@@ -397,16 +442,11 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 	case "meta.dataset", "dataset":
 		return resolvedField{SQL: "dataset", Type: "string"}, true
 	}
+	return resolvedField{}, false
+}
 
-	// Metric queries run against metric_events which doesn't have the
-	// span/log-specific columns. Everything else falls through to a
-	// json_extract on attributes — including metric-name keys like
-	// "requests.total" which the user references as first-class fields.
-	if b.q.Dataset == DatasetMetrics {
-		return resolvedField{}, false
-	}
-
-	// From here down we're on the events table (spans + logs).
+// eventsRealColumn resolves fields present on the events table (spans + logs).
+func eventsRealColumn(name string) (resolvedField, bool) {
 	switch name {
 	case "name":
 		return resolvedField{SQL: "name", Type: "string"}, true
@@ -433,43 +473,47 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 	case "db.system":
 		return resolvedField{SQL: "db_system", Type: "string"}, true
 	}
+	return resolvedField{}, false
+}
 
-	// Signal-specific synthetic fields.
-	switch b.q.Dataset {
-	case DatasetSpans:
-		switch name {
-		case "kind":
-			// Shorthand for meta.span_kind — returns the same string column.
-			return resolvedField{SQL: "span_kind", Type: "string"}, true
-		case "status_code":
-			return resolvedField{SQL: "COALESCE(status_code, 0)", Type: "int"}, true
-		case "duration_ns":
-			return resolvedField{SQL: "duration_ns", Type: "int"}, true
-		case "duration_ms":
-			return resolvedField{SQL: "(duration_ns / 1000000)", Type: "int"}, true
-		case "start_time_ns":
-			// Alias — spans emit time_ns as their start timestamp.
-			return resolvedField{SQL: "time_ns", Type: "time"}, true
-		case "is_root":
-			return resolvedField{SQL: "(parent_span_id IS NULL)", Type: "bool"}, true
-		case "error":
-			return resolvedField{SQL: `(status_code = 2 OR EXISTS (` +
-				`SELECT 1 FROM span_events se ` +
-				`WHERE se.trace_id = events.trace_id ` +
-				`AND se.span_id = events.span_id ` +
-				`AND se.name = 'exception'))`, Type: "bool"}, true
-		}
-	case DatasetLogs:
-		switch name {
-		case "severity_number":
-			return resolvedField{SQL: "severity_number", Type: "int"}, true
-		case "severity_text":
-			return resolvedField{SQL: "severity_text", Type: "string"}, true
-		case "body":
-			return resolvedField{SQL: "body", Type: "string"}, true
-		case "error":
-			return resolvedField{SQL: "(severity_number >= 17)", Type: "bool"}, true
-		}
+// spanRealColumn resolves span-specific synthetic fields.
+func spanRealColumn(name string) (resolvedField, bool) {
+	switch name {
+	case "kind":
+		// Shorthand for meta.span_kind — returns the same string column.
+		return resolvedField{SQL: "span_kind", Type: "string"}, true
+	case "status_code":
+		return resolvedField{SQL: "COALESCE(status_code, 0)", Type: "int"}, true
+	case "duration_ns":
+		return resolvedField{SQL: "duration_ns", Type: "int"}, true
+	case "duration_ms":
+		return resolvedField{SQL: "(duration_ns / 1000000)", Type: "int"}, true
+	case "start_time_ns":
+		// Alias — spans emit time_ns as their start timestamp.
+		return resolvedField{SQL: "time_ns", Type: "time"}, true
+	case "is_root":
+		return resolvedField{SQL: "(parent_span_id IS NULL)", Type: "bool"}, true
+	case "error":
+		return resolvedField{SQL: `(status_code = 2 OR EXISTS (` +
+			`SELECT 1 FROM span_events se ` +
+			`WHERE se.trace_id = events.trace_id ` +
+			`AND se.span_id = events.span_id ` +
+			`AND se.name = 'exception'))`, Type: "bool"}, true
+	}
+	return resolvedField{}, false
+}
+
+// logRealColumn resolves log-specific synthetic fields.
+func logRealColumn(name string) (resolvedField, bool) {
+	switch name {
+	case "severity_number":
+		return resolvedField{SQL: "severity_number", Type: "int"}, true
+	case "severity_text":
+		return resolvedField{SQL: "severity_text", Type: "string"}, true
+	case "body":
+		return resolvedField{SQL: "body", Type: "string"}, true
+	case "error":
+		return resolvedField{SQL: "(severity_number >= 17)", Type: "bool"}, true
 	}
 	return resolvedField{}, false
 }

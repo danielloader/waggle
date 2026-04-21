@@ -156,15 +156,8 @@ func (w *Writer) loop(ctx context.Context) {
 			flush()
 			return
 		case <-w.quit:
-			for {
-				select {
-				case b := <-w.ch:
-					merge(b)
-				default:
-					flush()
-					return
-				}
-			}
+			w.drainAndFlush(merge, flush)
+			return
 		case b := <-w.ch:
 			merge(b)
 			if eventCount >= w.flushEvents {
@@ -172,6 +165,18 @@ func (w *Writer) loop(ctx context.Context) {
 			}
 		case <-timerC:
 			flush()
+		}
+	}
+}
+
+func (w *Writer) drainAndFlush(merge func(store.Batch), flush func()) {
+	for {
+		select {
+		case b := <-w.ch:
+			merge(b)
+		default:
+			flush()
+			return
 		}
 	}
 }

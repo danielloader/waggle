@@ -21,26 +21,65 @@ func (q *Query) Validate() error {
 		return fmt.Errorf("dataset must be one of %q / %q / %q, got %q",
 			DatasetSpans, DatasetLogs, DatasetMetrics, q.Dataset)
 	}
+	if err := validateTimeRange(q); err != nil {
+		return err
+	}
+	if err := validateRawModeConstraints(q); err != nil {
+		return err
+	}
+	if err := validateSelectsAndRates(q); err != nil {
+		return err
+	}
+	if err := validateFiltersSlice("where", q.Where); err != nil {
+		return err
+	}
+	if err := validateFiltersSlice("having", q.Having); err != nil {
+		return err
+	}
+	if err := validateGroupByFields(q); err != nil {
+		return err
+	}
+	if err := validateOrderByFields(q); err != nil {
+		return err
+	}
+	if q.Limit < 0 || q.Limit > 10_000 {
+		return fmt.Errorf("limit must be in [0, 10000]")
+	}
+	if q.BucketMS < 0 {
+		return fmt.Errorf("bucket_ms must be >= 0")
+	}
+	return nil
+}
+
+func validateTimeRange(q *Query) error {
 	if q.TimeRange.From.IsZero() || q.TimeRange.To.IsZero() {
 		return fmt.Errorf("time_range.from and time_range.to are required")
 	}
 	if !q.TimeRange.To.After(q.TimeRange.From.Time) {
 		return fmt.Errorf("time_range.to must be after time_range.from")
 	}
-	// An empty select is the "raw rows" mode: return matching events rather
-	// than an aggregation. It pairs with no GROUP BY, no HAVING, and no time
-	// bucketing — those are all rollup-level concepts.
-	if len(q.Select) == 0 {
-		if len(q.GroupBy) > 0 {
-			return fmt.Errorf("raw-rows mode (empty select) is incompatible with group_by")
-		}
-		if len(q.Having) > 0 {
-			return fmt.Errorf("raw-rows mode (empty select) is incompatible with having")
-		}
-		if q.BucketMS > 0 {
-			return fmt.Errorf("raw-rows mode (empty select) is incompatible with bucket_ms")
-		}
+	return nil
+}
+
+// validateRawModeConstraints checks that raw-rows mode (empty select) is not
+// combined with aggregation-level concepts.
+func validateRawModeConstraints(q *Query) error {
+	if len(q.Select) != 0 {
+		return nil
 	}
+	if len(q.GroupBy) > 0 {
+		return fmt.Errorf("raw-rows mode (empty select) is incompatible with group_by")
+	}
+	if len(q.Having) > 0 {
+		return fmt.Errorf("raw-rows mode (empty select) is incompatible with having")
+	}
+	if q.BucketMS > 0 {
+		return fmt.Errorf("raw-rows mode (empty select) is incompatible with bucket_ms")
+	}
+	return nil
+}
+
+func validateSelectsAndRates(q *Query) error {
 	hasRate := false
 	for i, s := range q.Select {
 		if err := validateAggregation(s); err != nil {
@@ -53,21 +92,28 @@ func (q *Query) Validate() error {
 	if hasRate && q.BucketMS == 0 {
 		return fmt.Errorf("rate_* aggregations require bucket_ms > 0")
 	}
-	for i, f := range q.Where {
+	return nil
+}
+
+func validateFiltersSlice(name string, filters []Filter) error {
+	for i, f := range filters {
 		if err := validateFilter(f); err != nil {
-			return fmt.Errorf("where[%d]: %w", i, err)
+			return fmt.Errorf("%s[%d]: %w", name, i, err)
 		}
 	}
-	for i, f := range q.Having {
-		if err := validateFilter(f); err != nil {
-			return fmt.Errorf("having[%d]: %w", i, err)
-		}
-	}
+	return nil
+}
+
+func validateGroupByFields(q *Query) error {
 	for i, g := range q.GroupBy {
 		if !keyPattern.MatchString(g) {
 			return fmt.Errorf("group_by[%d]: invalid field name %q", i, g)
 		}
 	}
+	return nil
+}
+
+func validateOrderByFields(q *Query) error {
 	for i, o := range q.OrderBy {
 		if !keyPattern.MatchString(o.Field) {
 			return fmt.Errorf("order_by[%d]: invalid field name %q", i, o.Field)
@@ -75,12 +121,6 @@ func (q *Query) Validate() error {
 		if o.Dir != "" && o.Dir != "asc" && o.Dir != "desc" {
 			return fmt.Errorf("order_by[%d]: dir must be asc|desc, got %q", i, o.Dir)
 		}
-	}
-	if q.Limit < 0 || q.Limit > 10_000 {
-		return fmt.Errorf("limit must be in [0, 10000]")
-	}
-	if q.BucketMS < 0 {
-		return fmt.Errorf("bucket_ms must be >= 0")
 	}
 	return nil
 }
