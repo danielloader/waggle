@@ -149,25 +149,23 @@ export function Waterfall({
           {subtreeBox && timelineWidthPx > 0 && (
             <div
               className="absolute pointer-events-none rounded-sm"
-              style={{
-                top: subtreeBox.firstIdx * ROW_HEIGHT,
-                height: (subtreeBox.lastIdx - subtreeBox.firstIdx + 1) * ROW_HEIGHT,
-                // Horizontal position is inside the timeline area only.
-                // NAME_COL + SERVICE_COL + 8px (px-2 left pad) = start of usable timeline.
-                left:
-                  NAME_COL +
-                  SERVICE_COL +
-                  8 +
-                  (subtreeBox.minOffsetNS / traceDurNS) * timelineWidthPx,
-                width: Math.max(
+              style={(() => {
+                const PAD = 5;
+                const barLeft = (subtreeBox.minOffsetNS / traceDurNS) * timelineWidthPx;
+                const barWidth = Math.max(
                   2,
-                  ((subtreeBox.maxEndNS - subtreeBox.minOffsetNS) / traceDurNS) *
-                    timelineWidthPx,
-                ),
-                background: "color-mix(in srgb, var(--color-accent) 8%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--color-accent) 28%, transparent)",
-                zIndex: 5,
-              }}
+                  ((subtreeBox.maxEndNS - subtreeBox.minOffsetNS) / traceDurNS) * timelineWidthPx,
+                );
+                return {
+                  top: subtreeBox.firstIdx * ROW_HEIGHT,
+                  height: (subtreeBox.lastIdx - subtreeBox.firstIdx + 1) * ROW_HEIGHT,
+                  left: NAME_COL + SERVICE_COL + 8 + barLeft - PAD,
+                  width: barWidth + PAD * 2,
+                  background: "color-mix(in srgb, var(--color-accent) 5%, transparent)",
+                  border: "1px solid color-mix(in srgb, var(--color-accent) 22%, transparent)",
+                  zIndex: 5,
+                };
+              })()}
             />
           )}
           {rowVirtualizer.getVirtualItems().map((vr) => {
