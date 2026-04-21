@@ -107,7 +107,7 @@ export function Waterfall({
   const subtreeBox = useMemo(() => {
     if (!hoveredSpanId) return null;
     const hoveredRow = rows.find((r) => r.span.span_id === hoveredSpanId);
-    if (!hoveredRow) return null;
+    if (!hoveredRow || hoveredRow.childCount === 0) return null;
     const hp = hoveredRow.path;
 
     let firstIdx = -1, lastIdx = -1;
