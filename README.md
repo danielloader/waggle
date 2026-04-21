@@ -1,8 +1,31 @@
+<h1 align="center">waggle</h1>
+
 <p align="center">
   <img width="180" src="./docs/waggle.png" alt="waggle bee logo" />
 </p>
 
-<h1 align="center">waggle</h1>
+<p align="center">
+  <strong>OTEL viewer for local development.</strong>
+</p>
+
+<p align="center">
+  <a href="https://pkg.go.dev/github.com/danielloader/waggle">
+    <img src="https://pkg.go.dev/badge/github.com/danielloader/waggle.svg" alt="Go Reference" />
+  </a>
+  <a href="https://goreportcard.com/report/github.com/danielloader/waggle">
+    <img src="https://goreportcard.com/badge/github.com/danielloader/waggle" alt="Go Report Card" />
+  </a>
+  <a href="https://github.com/danielloader/waggle/actions/workflows/ci.yml">
+    <img src="https://github.com/danielloader/waggle/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" />
+  </a>
+  <a href="https://github.com/danielloader/waggle/releases/latest">
+    <img src="https://img.shields.io/github/v/release/danielloader/waggle?label=version&color=blue" alt="Latest Release" />
+  </a>
+  <a href="https://github.com/danielloader/waggle/blob/master/LICENSE">
+    <img src="https://img.shields.io/github/license/danielloader/waggle" alt="License" />
+  </a>
+</p>
+
 
 <p align="center">
 Local OpenTelemetry viewer inspired by Honeycomb — named for the
