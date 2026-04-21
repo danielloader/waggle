@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AlertTriangle, Link as LinkIcon } from "lucide-react";
 import clsx from "clsx";
@@ -78,6 +78,28 @@ export function Waterfall({
     rowVirtualizer.scrollToIndex(idx, { align: "center" });
   }, [scrollToSpanID, rows, rowVirtualizer]);
 
+  const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
+  // Path of the hovered span — used to detect subtree membership below.
+  const hoveredPath = hoveredSpanId
+    ? (rows.find((r) => r.span.span_id === hoveredSpanId)?.path ?? null)
+    : null;
+
+  // Bounding box (in virtual-scroll coordinates) for the hovered span and all
+  // its visible descendants. Rendered as a single overlay rect behind the rows.
+  const subtreeBox = useMemo(() => {
+    if (!hoveredPath) return null;
+    let first = -1, last = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const p = rows[i].path;
+      if (p === hoveredPath || p.startsWith(hoveredPath + ".")) {
+        if (first === -1) first = i;
+        last = i;
+      }
+    }
+    if (first === -1) return null;
+    return { top: first * ROW_HEIGHT, height: (last - first + 1) * ROW_HEIGHT };
+  }, [hoveredPath, rows]);
+
   // Measured timeline pixel width — drives the label-placement heuristic in
   // each Row. We need real pixels (not percentages) to decide whether a
   // duration label will fit inside its bar.
@@ -116,6 +138,18 @@ export function Waterfall({
             width: "100%",
           }}
         >
+          {/* Subtree bounding box — rendered before rows so it sits behind them */}
+          {subtreeBox && (
+            <div
+              className="absolute left-0 right-0 pointer-events-none"
+              style={{
+                top: subtreeBox.top,
+                height: subtreeBox.height,
+                background: "color-mix(in srgb, var(--color-accent) 7%, transparent)",
+                boxShadow: "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent)",
+              }}
+            />
+          )}
           {rowVirtualizer.getVirtualItems().map((vr) => {
             const row = rows[vr.index];
             return (
@@ -134,6 +168,7 @@ export function Waterfall({
                 isAltRow={vr.index % 2 === 1}
                 onSelect={onSelect}
                 onToggleCollapse={onToggleCollapse}
+                onHover={setHoveredSpanId}
                 onSelectEvent={onSelectEvent}
                 onSelectLinks={onSelectLinks}
               />
@@ -214,6 +249,7 @@ interface RowProps {
   isAltRow: boolean;
   onSelect: (spanID: string) => void;
   onToggleCollapse: (spanID: string) => void;
+  onHover: (spanID: string | null) => void;
   onSelectEvent?: (spanID: string, eventIdx: number) => void;
   onSelectLinks?: (spanID: string) => void;
 }
@@ -230,6 +266,7 @@ function Row({
   isAltRow,
   onSelect,
   onToggleCollapse,
+  onHover,
   onSelectEvent,
   onSelectLinks,
 }: RowProps) {
@@ -304,9 +341,7 @@ function Row({
       style={{
         top,
         height: ROW_HEIGHT,
-        // Precedence: selection → search highlight → zebra stripe. The
-        // stripe is a subtle tick so the eye can track a long row across
-        // the full-width timeline without losing its place.
+        // Precedence: selection → search highlight → zebra stripe.
         background: isSelected
           ? "color-mix(in srgb, var(--color-accent) 14%, transparent)"
           : isHighlighted
@@ -316,6 +351,8 @@ function Row({
               : undefined,
       }}
       onClick={() => onSelect(row.span.span_id)}
+      onMouseEnter={() => onHover(row.span.span_id)}
+      onMouseLeave={() => onHover(null)}
     >
       <div
         className="shrink-0 flex items-center gap-1 pr-2"
