@@ -8,8 +8,8 @@ import type { TraceModel, WaterfallRow } from "./tree";
 import { isSpanError } from "./tree";
 
 const ROW_HEIGHT = 28;
-export const NAME_COL = 320;
-export const SERVICE_COL = 160;
+const NAME_COL_DEFAULT = 320;
+const SERVICE_COL_DEFAULT = 160;
 
 interface Props {
   model: TraceModel;
@@ -78,6 +78,26 @@ export function Waterfall({
     rowVirtualizer.scrollToIndex(idx, { align: "center" });
   }, [scrollToSpanID, rows, rowVirtualizer]);
 
+  const [nameWidth, setNameWidth] = useState(NAME_COL_DEFAULT);
+  const [serviceWidth, setServiceWidth] = useState(SERVICE_COL_DEFAULT);
+
+  const startResize = (e: React.MouseEvent, col: "name" | "service") => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = col === "name" ? nameWidth : serviceWidth;
+    const setW = col === "name" ? setNameWidth : setServiceWidth;
+    const minW = col === "name" ? 100 : 60;
+    const maxW = col === "name" ? 700 : 500;
+    const onMove = (ev: MouseEvent) =>
+      setW(Math.max(minW, Math.min(maxW, startW + ev.clientX - startX)));
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
 
   // For the hovered span, compute the bounding box of its subtree in both
@@ -87,7 +107,7 @@ export function Waterfall({
   const subtreeBox = useMemo(() => {
     if (!hoveredSpanId) return null;
     const hoveredRow = rows.find((r) => r.span.span_id === hoveredSpanId);
-    if (!hoveredRow) return null;
+    if (!hoveredRow || hoveredRow.childCount === 0) return null;
     const hp = hoveredRow.path;
 
     let firstIdx = -1, lastIdx = -1;
@@ -105,32 +125,32 @@ export function Waterfall({
     return { firstIdx, lastIdx, minOffsetNS, maxEndNS };
   }, [hoveredSpanId, rows]);
 
-  // Measured timeline pixel width — drives the label-placement heuristic in
-  // each Row. We need real pixels (not percentages) to decide whether a
-  // duration label will fit inside its bar.
-  const [timelineWidthPx, setTimelineWidthPx] = useState(0);
+  // Track raw container width via ResizeObserver; timelineWidthPx is derived
+  // so it re-computes automatically when either the container or either column
+  // width changes.
+  const [containerWidth, setContainerWidth] = useState(0);
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
-    const update = () => {
-      // Subtract NAME_COL + SERVICE_COL for the two fixed columns and the
-      // 16px total horizontal padding on each row's timeline (px-2). What
-      // remains is the content box where bar percentages are anchored.
-      setTimelineWidthPx(
-        Math.max(0, el.clientWidth - NAME_COL - SERVICE_COL - 16),
-      );
-    };
+    const update = () => setContainerWidth(el.clientWidth);
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+  // 16px = px-2 (8px) on each side of the timeline content box.
+  const timelineWidthPx = Math.max(0, containerWidth - nameWidth - serviceWidth - 16);
 
   const traceDurNS = Math.max(1, model.traceEndNS - model.traceStartNS);
 
   return (
     <div className="h-full flex flex-col">
-      <TimelineRuler traceDurNS={traceDurNS} />
+      <TimelineRuler
+        traceDurNS={traceDurNS}
+        nameWidth={nameWidth}
+        serviceWidth={serviceWidth}
+        onStartResize={startResize}
+      />
       <div
         ref={parentRef}
         className="flex-1 overflow-y-auto overflow-x-hidden"
@@ -159,7 +179,7 @@ export function Waterfall({
                 return {
                   top: subtreeBox.firstIdx * ROW_HEIGHT,
                   height: (subtreeBox.lastIdx - subtreeBox.firstIdx + 1) * ROW_HEIGHT,
-                  left: NAME_COL + SERVICE_COL + 8 + barLeft - PAD,
+                  left: nameWidth + serviceWidth + 8 + barLeft - PAD,
                   width: barWidth + PAD * 2,
                   background: "color-mix(in srgb, var(--color-accent) 5%, transparent)",
                   border: "1px solid color-mix(in srgb, var(--color-accent) 22%, transparent)",
@@ -178,6 +198,8 @@ export function Waterfall({
                 traceStartNS={model.traceStartNS}
                 traceDurNS={traceDurNS}
                 timelineWidthPx={timelineWidthPx}
+                nameWidth={nameWidth}
+                serviceWidth={serviceWidth}
                 isSelected={selectedSpanID === row.span.span_id}
                 isCollapsed={collapsed.has(row.span.span_id)}
                 isHighlighted={
@@ -200,11 +222,21 @@ export function Waterfall({
 
 // ---------------------------------------------------------------------------
 
-function TimelineRuler({ traceDurNS }: { traceDurNS: number }) {
+function TimelineRuler({
+  traceDurNS,
+  nameWidth,
+  serviceWidth,
+  onStartResize,
+}: {
+  traceDurNS: number;
+  nameWidth: number;
+  serviceWidth: number;
+  onStartResize: (e: React.MouseEvent, col: "name" | "service") => void;
+}) {
   const ticks = computeTicks(traceDurNS);
   return (
     <div
-      className="flex h-7 text-[10px] sticky top-0 z-10 border-b"
+      className="flex h-7 text-[10px] sticky top-0 z-10 border-b select-none"
       style={{
         background: "var(--color-surface)",
         borderColor: "var(--color-border)",
@@ -212,16 +244,24 @@ function TimelineRuler({ traceDurNS }: { traceDurNS: number }) {
       }}
     >
       <div
-        className="shrink-0 px-3 py-1 border-r"
-        style={{ width: NAME_COL, borderColor: "var(--color-border)" }}
+        className="shrink-0 px-3 py-1 border-r relative"
+        style={{ width: nameWidth, borderColor: "var(--color-border)" }}
       >
         name
+        <div
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-[var(--color-accent)]/30 transition-colors"
+          onMouseDown={(e) => onStartResize(e, "name")}
+        />
       </div>
       <div
-        className="shrink-0 px-3 py-1 border-r"
-        style={{ width: SERVICE_COL, borderColor: "var(--color-border)" }}
+        className="shrink-0 px-3 py-1 border-r relative"
+        style={{ width: serviceWidth, borderColor: "var(--color-border)" }}
       >
         Service Name
+        <div
+          className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-20 hover:bg-[var(--color-accent)]/30 transition-colors"
+          onMouseDown={(e) => onStartResize(e, "service")}
+        />
       </div>
       <div className="flex-1 px-2 py-1">
         <div className="relative w-full h-full">
@@ -261,6 +301,8 @@ interface RowProps {
   traceStartNS: number;
   traceDurNS: number;
   timelineWidthPx: number;
+  nameWidth: number;
+  serviceWidth: number;
   isSelected: boolean;
   isCollapsed: boolean;
   isHighlighted: boolean;
@@ -278,6 +320,8 @@ function Row({
   traceStartNS,
   traceDurNS,
   timelineWidthPx,
+  nameWidth,
+  serviceWidth,
   isSelected,
   isCollapsed,
   isHighlighted,
@@ -373,7 +417,7 @@ function Row({
     >
       <div
         className="shrink-0 flex items-center gap-1 pr-2"
-        style={{ width: NAME_COL, paddingLeft: row.depth * 16 + 8 }}
+        style={{ width: nameWidth, paddingLeft: row.depth * 16 + 8 }}
       >
         {row.childCount > 0 ? (
           <button
@@ -425,7 +469,7 @@ function Row({
       </div>
       <div
         className="shrink-0 px-3 text-xs truncate"
-        style={{ width: SERVICE_COL, color: "var(--color-ink-muted)" }}
+        style={{ width: serviceWidth, color: "var(--color-ink-muted)" }}
         title={row.span.service_name}
       >
         {row.span.service_name}
