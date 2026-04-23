@@ -13,6 +13,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"runtime"
+	"runtime/pprof"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -29,6 +32,8 @@ type queryCase struct {
 func main() {
 	dbPath := flag.String("db", "./waggle-test.db", "SQLite database path")
 	runs := flag.Int("runs", 3, "Number of runs per query (median reported)")
+	cpuProfile := flag.String("cpuprofile", "", "Write a CPU profile covering the query battery to this path")
+	memProfile := flag.String("memprofile", "", "Write a heap profile to this path after the battery completes")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -386,6 +391,20 @@ func main() {
 
 	results := make([]result, len(cases))
 
+	// CPU profile covers only the battery loop, not store open or case setup,
+	// so the samples line up with query execution.
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			log.Fatalf("create cpu profile: %v", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Fatalf("start cpu profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	for i, c := range cases {
 		r := result{label: c.label}
 		for run := range *runs {
@@ -432,6 +451,18 @@ func main() {
 			mx.Round(time.Millisecond))
 	}
 	w.Flush()
+
+	if *memProfile != "" {
+		f, err := os.Create(*memProfile)
+		if err != nil {
+			log.Fatalf("create mem profile: %v", err)
+		}
+		defer f.Close()
+		runtime.GC()
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			log.Fatalf("write heap profile: %v", err)
+		}
+	}
 }
 
 // runQuery executes a SELECT, drains the rows, and returns the row count.

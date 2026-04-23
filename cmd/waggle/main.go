@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -27,6 +28,14 @@ func main() {
 
 	log := newLogger(cfg.LogLevel)
 	slog.SetDefault(log)
+
+	// Block/mutex profiles are empty unless sampling rates are set. Gate on
+	// --dev so release binaries pay no overhead — the pprof HTTP surface is
+	// already --dev-only (see internal/server/server.go).
+	if cfg.Dev {
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
