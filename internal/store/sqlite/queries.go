@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1046,11 +1047,7 @@ func sortByGroupThenBucket(rows [][]any, groupIdxs []int, bucketIdx int) {
 }
 
 func sortRows(rows [][]any, less func(a, b []any) bool) {
-	for i := 1; i < len(rows); i++ {
-		for j := i; j > 0 && less(rows[j], rows[j-1]); j-- {
-			rows[j], rows[j-1] = rows[j-1], rows[j]
-		}
-	}
+	sort.SliceStable(rows, func(i, j int) bool { return less(rows[i], rows[j]) })
 }
 
 func compareAny(a, b any) int {

@@ -565,24 +565,16 @@ func spanKindString(k tracepb.Span_SpanKind) string {
 	return "UNSPECIFIED"
 }
 
-// buildAttrs merges user attributes with system-stamped meta.* keys. If a
-// user key collides with a reserved meta.* key, the system value wins and
-// the overwrite counter bumps for telemetry.
+// buildAttrs merges user attributes with system-stamped meta.* keys into a
+// sorted JSON object. If a user key collides with a reserved meta.* key, the
+// system value wins and the overwrite counter bumps for telemetry. Hot path:
+// one call per span/log/span-event/span-link — goes through a pooled byte
+// buffer + direct appender to avoid map allocation and reflection marshalling.
 func (t *transformer) buildAttrs(userAttrs []*commonpb.KeyValue, metaStamps map[string]any) string {
-	m := attrsToMap(userAttrs)
-	for k, v := range metaStamps {
-		if _, collision := m[k]; collision {
-			if _, reserved := reservedMetaKeys[k]; reserved {
-				t.metaOverwrites++
-			}
-		}
-		m[k] = v
-	}
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return "{}"
-	}
-	return string(raw)
+	bp := getAttrBuf()
+	defer putAttrBuf(bp)
+	*bp = encodeMergedAttrs(*bp, userAttrs, metaStamps, func() { t.metaOverwrites++ })
+	return string(*bp)
 }
 
 // noteAttrKeys registers each (key, valueType) observation for the catalog.
@@ -689,12 +681,10 @@ func attrsToJSON(attrs []*commonpb.KeyValue) string {
 	if len(attrs) == 0 {
 		return "{}"
 	}
-	m := attrsToMap(attrs)
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return "{}"
-	}
-	return string(raw)
+	bp := getAttrBuf()
+	defer putAttrBuf(bp)
+	*bp = encodeUserAttrs(*bp, attrs)
+	return string(*bp)
 }
 
 func attrsToMap(attrs []*commonpb.KeyValue) map[string]any {
