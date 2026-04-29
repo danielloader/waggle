@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeft, ExternalLink } from "lucide-react";
-import type { SpanOut, TraceDetail, TraceResource } from "../../lib/api";
+import { api, HttpError, type SpanOut, type TraceDetail, type TraceResource } from "../../lib/api";
 import { serviceColor } from "../../lib/colors";
 import { formatDuration } from "../../lib/format";
 import { spanStatusLabel } from "./tree";
@@ -15,6 +15,12 @@ import {
   parseAttributes,
   type AttrRow,
 } from "../../components/ui/AttributesPanel";
+import {
+  appendWhere,
+  queryToUrlSearch,
+  type Filter,
+  type Query,
+} from "../../lib/query";
 
 interface Props {
   span: SpanOut | null;
@@ -27,6 +33,25 @@ interface Props {
   activeTab?: string;
   /** Fires when the user clicks a tab header. Parent should sync its state. */
   onTabChange?: (tab: string) => void;
+  /**
+   * Hex content-hash of the originating /events query. When set, the
+   * filter button on attribute rows fetches the source query from
+   * /api/history/<hash>, appends the new filter to its WHERE, and
+   * navigates to /events with the merged search. When unset (or the
+   * server says 404 because the row was pruned), we fall back to a
+   * minimal /events?dataset=spans&where=[<just-this-filter>] navigation
+   * so the click still produces something useful.
+   */
+  fromHash?: string | null;
+  /**
+   * Originating /events tab — restored on the merged navigation so the
+   * user lands back where they came from. The tab isn't part of the
+   * stored Query AST (UI-only state), so it rides through the trace URL
+   * as its own search param. Defaults to "explore" when absent — the
+   * dataset-agnostic raw-rows view, which is where trace links live for
+   * spans/logs anyway.
+   */
+  fromTab?: "overview" | "traces" | "explore" | "tail" | null;
 }
 
 /**
@@ -42,6 +67,8 @@ export function SpanDetail({
   onSelectEvent,
   activeTab,
   onTabChange,
+  fromHash = null,
+  fromTab = null,
 }: Props) {
   const [localTab, setLocalTab] = useState("fields");
   const tab = activeTab ?? localTab;
@@ -49,6 +76,47 @@ export function SpanDetail({
     if (onTabChange) onTabChange(t);
     else setLocalTab(t);
   };
+
+  const navigate = useNavigate();
+  const onFilter = useCallback(
+    async (f: Filter) => {
+      // Restore the source tab so the user lands back where they
+      // clicked from. queryToUrlSearch can't recover this (tab is
+      // UI-only state, not in the Query AST), so the tab rides the
+      // trace URL alongside fromHash. Default to "explore" — that's
+      // where trace links physically live, so it's the right guess
+      // when fromTab is missing (deep-link, older session, etc).
+      const tab = fromTab ?? "explore";
+      // Best-effort recovery of the source query. We can't await
+      // user-perceived latency here, but a single indexed sqlite
+      // lookup is sub-ms in practice.
+      let merged: Record<string, unknown>;
+      if (fromHash) {
+        try {
+          const entry = await api.getHistoryByHash(fromHash);
+          const src = JSON.parse(entry.query_json) as Query;
+          const url = queryToUrlSearch(src);
+          merged = {
+            ...url,
+            where: appendWhere(url.where, f),
+            tab,
+          } as unknown as Record<string, unknown>;
+        } catch (err) {
+          // 404: row was pruned mid-flight. Anything else: log and
+          // fall through to the same minimal fallback. Either way the
+          // user gets a meaningful click result.
+          if (!(err instanceof HttpError) || err.status !== 404) {
+            console.warn("filter-by: history lookup failed", err);
+          }
+          merged = { dataset: "spans", where: [f], tab } as unknown as Record<string, unknown>;
+        }
+      } else {
+        merged = { dataset: "spans", where: [f], tab } as unknown as Record<string, unknown>;
+      }
+      navigate({ to: "/events", search: merged });
+    },
+    [fromHash, fromTab, navigate],
+  );
 
   if (!span) {
     return (
@@ -92,13 +160,14 @@ export function SpanDetail({
           <Tab value="links">Links ({span.links?.length ?? 0})</Tab>
         </Tabs.List>
         <Tabs.Content value="fields" className="flex-1 overflow-auto">
-          <AttributesPanel rows={allFields} />
+          <AttributesPanel rows={allFields} onFilter={onFilter} />
         </Tabs.Content>
         <Tabs.Content value="events" className="flex-1 overflow-auto">
           <EventsTab
             span={span}
             selectedIdx={selectedEventIdx}
             onSelect={onSelectEvent}
+            onFilter={onFilter}
           />
         </Tabs.Content>
         <Tabs.Content value="links" className="flex-1 overflow-auto">
@@ -224,10 +293,12 @@ function EventsTab({
   span,
   selectedIdx,
   onSelect,
+  onFilter,
 }: {
   span: SpanOut;
   selectedIdx: number | null;
   onSelect?: (idx: number | null) => void;
+  onFilter?: (filter: Filter) => void;
 }) {
   // Fallback local state when the parent doesn't want to own this.
   const [localIdx, setLocalIdx] = useState<number | null>(null);
@@ -261,6 +332,7 @@ function EventsTab({
         span={span}
         indexLabel={`${effectiveIdx + 1} / ${events.length}`}
         onBack={() => setIdx(null)}
+        onFilter={onFilter}
       />
     );
   }
@@ -307,11 +379,13 @@ function EventDetail({
   span,
   indexLabel,
   onBack,
+  onFilter,
 }: {
   event: NonNullable<SpanOut["events"]>[number];
   span: SpanOut;
   indexLabel: string;
   onBack: () => void;
+  onFilter?: (filter: Filter) => void;
 }) {
   const rows = useMemo(() => {
     // Synthesise meta rows alongside the user-set attributes so the whole
@@ -364,7 +438,7 @@ function EventDetail({
         </div>
       </div>
       <div className="flex-1 overflow-auto">
-        <AttributesPanel rows={rows} />
+        <AttributesPanel rows={rows} onFilter={onFilter} />
       </div>
     </div>
   );

@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { X } from "lucide-react";
 import type {
   Dataset,
+  Filter,
   QueryColumn,
   QueryResult,
   QuerySearch,
@@ -21,10 +22,19 @@ export interface SelectedRow {
   columns: QueryColumn[];
 }
 
+type TabID = "overview" | "traces" | "explore" | "tail";
+
 interface Props {
   dataset: Dataset;
   querySearch: QuerySearch;
   runCount: number;
+  /** Hex content-hash of the originating chart query, threaded into the
+   *  trace links so the trace view's "filter by" affordance can return
+   *  to this query. Null while a fresh query is in flight. */
+  historyHash?: string | null;
+  /** Active /events tab when the trace link was rendered. Round-tripped
+   *  through the trace URL so filter-by lands the user back here. */
+  currentTab?: TabID;
   /** Reports the scroll container's vertical offset on every scroll event so
    *  the page can collapse the query/chart header once the user drills in. */
   onScrollY?: (y: number) => void;
@@ -40,7 +50,16 @@ interface Props {
  * dataset + WHERE + time range. Backed by the same /api/query endpoint the
  * chart uses; empty SELECT switches that endpoint into raw-rows mode.
  */
-export function EventsTable({ dataset, querySearch, runCount, onScrollY, selected, onSelect }: Props) {
+export function EventsTable({
+  dataset,
+  querySearch,
+  runCount,
+  historyHash = null,
+  currentTab = "explore",
+  onScrollY,
+  selected,
+  onSelect,
+}: Props) {
   const result = useQuery({
     queryKey: [
       "events",
@@ -88,7 +107,14 @@ export function EventsTable({ dataset, querySearch, runCount, onScrollY, selecte
   }
 
   if (dataset === "spans") {
-    return <SpansTable result={result.data!} onScrollY={onScrollY} />;
+    return (
+      <SpansTable
+        result={result.data!}
+        onScrollY={onScrollY}
+        historyHash={historyHash}
+        currentTab={currentTab}
+      />
+    );
   }
   if (dataset === "metrics") {
     return (
@@ -106,6 +132,8 @@ export function EventsTable({ dataset, querySearch, runCount, onScrollY, selecte
       onScrollY={onScrollY}
       selected={selected ?? null}
       onSelect={onSelect}
+      historyHash={historyHash}
+      currentTab={currentTab}
     />
   );
 }
@@ -117,9 +145,13 @@ export function EventsTable({ dataset, querySearch, runCount, onScrollY, selecte
 function SpansTable({
   result,
   onScrollY,
+  historyHash,
+  currentTab,
 }: {
   result: QueryResult;
   onScrollY?: (y: number) => void;
+  historyHash: string | null;
+  currentTab: TabID;
 }) {
   const idx = columnIndex(result);
   return (
@@ -171,6 +203,10 @@ function SpansTable({
                       <Link
                         to="/traces/$traceId"
                         params={{ traceId: traceID }}
+                        search={{
+                          ...(historyHash ? { from: historyHash } : {}),
+                          tab: currentTab,
+                        }}
                         className="underline font-mono text-xs"
                         style={{ color: "var(--color-accent)" }}
                       >
@@ -198,11 +234,15 @@ function LogsTable({
   onScrollY,
   selected,
   onSelect,
+  historyHash,
+  currentTab,
 }: {
   result: QueryResult;
   onScrollY?: (y: number) => void;
   selected: SelectedRow | null;
   onSelect?: (next: SelectedRow | null) => void;
+  historyHash: string | null;
+  currentTab: TabID;
 }) {
   const idx = columnIndex(result);
   const selectedRef = selected?.row;
@@ -270,7 +310,11 @@ function LogsTable({
                       <Link
                         to="/traces/$traceId"
                         params={{ traceId: traceID }}
-                        search={spanID ? { span: spanID } : {}}
+                        search={{
+                          ...(spanID ? { span: spanID } : {}),
+                          ...(historyHash ? { from: historyHash } : {}),
+                          tab: currentTab,
+                        }}
                         className="underline"
                         style={{ color: "var(--color-accent)" }}
                       >
@@ -300,10 +344,20 @@ export function LogDetailPane({
   columns,
   row,
   onClose,
+  onFilter,
+  historyHash = null,
+  currentTab = "explore",
 }: {
   columns: QueryColumn[];
   row: unknown[];
   onClose: () => void;
+  /** Append-and-rerun callback for the per-attribute filter button. */
+  onFilter?: (filter: Filter) => void;
+  /** Source-query hash propagated to the trace link in this pane. */
+  historyHash?: string | null;
+  /** Active tab when this pane was opened — round-tripped through the
+   *  trace link so filter-by lands the user back on this tab. */
+  currentTab?: TabID;
 }) {
   const idx = columnIndexFromColumns(columns);
   const timeNS = Number(row[idx.time_ns] ?? 0);
@@ -354,7 +408,11 @@ export function LogDetailPane({
             <Link
               to="/traces/$traceId"
               params={{ traceId: traceID }}
-              search={spanID ? { span: spanID } : {}}
+              search={{
+                ...(spanID ? { span: spanID } : {}),
+                ...(historyHash ? { from: historyHash } : {}),
+                tab: currentTab,
+              }}
               className="underline truncate"
               style={{ color: "var(--color-accent)" }}
             >
@@ -365,7 +423,7 @@ export function LogDetailPane({
         ) : null}
       </div>
       <div className="flex-1 overflow-auto">
-        <AttributesPanel attributesJson={attributes} filterTarget="/logs" />
+        <AttributesPanel attributesJson={attributes} onFilter={onFilter} />
       </div>
     </PaneShell>
   );
@@ -465,10 +523,13 @@ export function MetricDetailPane({
   columns,
   row,
   onClose,
+  onFilter,
 }: {
   columns: QueryColumn[];
   row: unknown[];
   onClose: () => void;
+  /** Append-and-rerun callback for the per-attribute filter button. */
+  onFilter?: (filter: Filter) => void;
 }) {
   const idx = columnIndexFromColumns(columns);
   const timeNS = Number(row[idx.time_ns] ?? 0);
@@ -511,7 +572,7 @@ export function MetricDetailPane({
         </div>
       </div>
       <div className="flex-1 overflow-auto">
-        <AttributesPanel attributesJson={attributes} filterTarget="/metrics" />
+        <AttributesPanel attributesJson={attributes} onFilter={onFilter} />
       </div>
     </PaneShell>
   );

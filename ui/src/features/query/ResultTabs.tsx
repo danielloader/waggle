@@ -17,6 +17,11 @@ interface Props {
   /** Increments on every Run click, forcing a refetch even when params
    *  are unchanged since the last run. */
   runCount: number;
+  /** Hex content-hash of the last successful chart run. Threaded into
+   *  trace links so the trace view's "filter by" can return to the
+   *  originating query. Null while a query is in flight or hasn't been
+   *  recorded (e.g. raw-rows mode with empty SELECT). */
+  historyHash?: string | null;
   onTabChange: (tab: TabID) => void;
   /** Optional slot for a logs-only FTS search input rendered next to tabs. */
   rightSlot?: React.ReactNode;
@@ -53,6 +58,7 @@ export function ResultTabs({
   search,
   querySearch,
   runCount,
+  historyHash,
   onTabChange,
   rightSlot,
   onExploreScrollY,
@@ -108,12 +114,21 @@ export function ResultTabs({
       </div>
       <div className="flex-1 overflow-hidden">
         {active === "overview" && <OverviewTab dataset={dataset} querySearch={querySearch} runCount={runCount} />}
-        {active === "traces" && <TracesTab querySearch={querySearch} runCount={runCount} />}
+        {active === "traces" && (
+          <TracesTab
+            querySearch={querySearch}
+            runCount={runCount}
+            historyHash={historyHash ?? null}
+            currentTab={active}
+          />
+        )}
         {active === "explore" && (
           <EventsTable
             dataset={dataset}
             querySearch={querySearch}
             runCount={runCount}
+            historyHash={historyHash ?? null}
+            currentTab={active}
             onScrollY={onExploreScrollY}
             selected={selectedRow ?? null}
             onSelect={onSelectRow}

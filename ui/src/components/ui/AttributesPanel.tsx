@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
 import { Filter as FilterIcon, Search } from "lucide-react";
 import type { Filter } from "../../lib/query";
 
@@ -19,12 +18,13 @@ interface Props {
   /** Placeholder for the filter input. */
   filterPlaceholder?: string;
   /**
-   * Where clicking the filter button on a scalar row navigates to. The
-   * query builder's URL schema is shared across /traces, /logs, and
-   * /metrics — the caller picks the dataset-appropriate route. Defaults
-   * to /traces.
+   * Click handler for the per-row filter button. The panel is purely
+   * presentational — the caller owns navigation and how the new filter
+   * is merged into the page's WHERE clause (append vs replace,
+   * cross-route navigation, etc). When omitted, the filter button is
+   * hidden so users don't see a no-op affordance.
    */
-  filterTarget?: "/traces" | "/logs" | "/metrics";
+  onFilter?: (filter: Filter) => void;
 }
 
 /**
@@ -39,9 +39,8 @@ export function AttributesPanel({
   rows,
   attributesJson,
   filterPlaceholder = "Filter fields and values",
-  filterTarget = "/traces",
+  onFilter,
 }: Props) {
-  const navigate = useNavigate();
   const [filter, setFilter] = useState("");
 
   const allRows = rows ?? parseAttributes(attributesJson ?? "{}");
@@ -49,11 +48,7 @@ export function AttributesPanel({
   const applyFilter = (row: AttrRow) => {
     const value = filterableValue(row);
     if (value === null) return;
-    const f: Filter = { field: row.key, op: "=", value };
-    navigate({
-      to: filterTarget,
-      search: { where: [f] } as unknown as Record<string, unknown>,
-    });
+    onFilter?.({ field: row.key, op: "=", value });
   };
 
   const f = filter.toLowerCase();
@@ -100,12 +95,12 @@ export function AttributesPanel({
                 >
                   {r.key}
                 </span>
-                {canFilter && (
+                {canFilter && onFilter && (
                   <button
                     type="button"
                     onClick={() => applyFilter(r)}
                     className="ml-auto opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:bg-[var(--color-card-hover)]"
-                    title={`Filter ${filterTarget} to ${r.key} = ${String(r.value)}`}
+                    title={`Filter on ${r.key} = ${String(r.value)}`}
                   >
                     <FilterIcon
                       className="w-3 h-3"

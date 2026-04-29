@@ -6,9 +6,19 @@ import { serviceColor } from "../../lib/colors";
 import { formatDuration, formatRelativeTimestamp } from "../../lib/format";
 import { CopyButton } from "../../components/ui/CopyButton";
 
+type TabID = "overview" | "traces" | "explore" | "tail";
+
 interface Props {
   querySearch: QuerySearch;
   runCount: number;
+  /** Hex content-hash of the originating chart query, threaded into the
+   *  trace links so the trace view's "filter by" affordance can return
+   *  to this query. Null while a fresh query is in flight. */
+  historyHash?: string | null;
+  /** Active /events tab when the trace link was rendered. Round-tripped
+   *  through the trace URL so filter-by lands the user back on the
+   *  originating tab. */
+  currentTab?: TabID;
 }
 
 /**
@@ -17,7 +27,12 @@ interface Props {
  * Each row is one trace (by virtue of being its root span) and links into
  * the full waterfall view.
  */
-export function TracesTab({ querySearch, runCount }: Props) {
+export function TracesTab({
+  querySearch,
+  runCount,
+  historyHash = null,
+  currentTab = "traces",
+}: Props) {
   const result = useQuery({
     queryKey: ["traces-tab", querySearch, runCount],
     queryFn: ({ signal }) => {
@@ -81,7 +96,13 @@ export function TracesTab({ querySearch, runCount }: Props) {
         </thead>
         <tbody>
           {data.rows.map((row, i) => (
-            <TraceRow key={i} row={row} result={data} />
+            <TraceRow
+              key={i}
+              row={row}
+              result={data}
+              historyHash={historyHash}
+              currentTab={currentTab}
+            />
           ))}
         </tbody>
       </table>
@@ -89,7 +110,17 @@ export function TracesTab({ querySearch, runCount }: Props) {
   );
 }
 
-function TraceRow({ row, result }: { row: unknown[]; result: QueryResult }) {
+function TraceRow({
+  row,
+  result,
+  historyHash,
+  currentTab,
+}: {
+  row: unknown[];
+  result: QueryResult;
+  historyHash: string | null;
+  currentTab: TabID;
+}) {
   const col = (name: string) => result.columns.findIndex((c) => c.name === name);
 
   const traceID = String(row[col("trace_id")] ?? "").toLowerCase();
@@ -128,6 +159,10 @@ function TraceRow({ row, result }: { row: unknown[]; result: QueryResult }) {
             <Link
               to="/traces/$traceId"
               params={{ traceId: traceID }}
+              search={{
+                ...(historyHash ? { from: historyHash } : {}),
+                tab: currentTab,
+              }}
               className="underline font-mono text-xs"
               style={{ color: "var(--color-accent)" }}
             >

@@ -138,6 +138,12 @@ export const api = {
       `/api/history?limit=${limit}`,
       signal,
     ),
+
+  // Look up a single dedup'd query_history entry by its hex content
+  // hash. Throws HttpError(404) when the row was pruned out — callers
+  // can branch on `err.status === 404` to fall back gracefully.
+  getHistoryByHash: (hash: string, signal?: AbortSignal) =>
+    getJSON<QueryHistoryEntry>(`/api/history/${hash}`, signal),
 };
 
 export interface QueryHistoryEntry {

@@ -222,6 +222,11 @@ type QueryResult struct {
 	Rows      [][]any       `json:"rows"`
 	HasBucket bool          `json:"has_bucket"`
 	GroupKeys []string      `json:"group_keys,omitempty"`
+	// HistoryHash is the hex-encoded query_history content hash for this
+	// run. Set by the API layer after RunQuery — the store doesn't
+	// populate it. Used by the UI to round-trip a "filter by" click in
+	// the trace view back to the originating query.
+	HistoryHash string `json:"history_hash,omitempty"`
 }
 
 // QueryHistoryEntry is one dedup'd row in the query_history table — the

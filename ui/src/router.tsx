@@ -11,11 +11,26 @@ import { HistoryPage } from "./routes/HistoryPage";
 import { TraceView } from "./features/traces/TraceView";
 import { querySearchSchema } from "./lib/query";
 
-// Trace route accepts an optional ?span=<id> to deep-link into a specific
-// span — e.g. clicking the trace link on a log row opens the waterfall
-// with that log's emitting span pre-selected and scrolled into view.
+// Trace route accepts:
+//   ?span=<id>   — deep-link into a specific span (clicking a log row's
+//                  trace link pre-selects the emitting span).
+//   ?from=<hex>  — content-hash of the originating /events query
+//                  (query_history). The "filter by" affordance on span
+//                  attributes uses this to round-trip back to the source
+//                  query with the new filter merged in. 64-char lower
+//                  hex (SHA-256). Optional — deep-links from outside
+//                  (e.g. shared trace URLs) just don't have it, and the
+//                  filter button falls back to a default /events view.
+//   ?tab=<id>    — originating /events tab (Overview/Traces/Explore/
+//                  Tail). Round-tripped purely so filter-by lands the
+//                  user back on the same tab they clicked from. The
+//                  tab isn't part of the Query AST stored in
+//                  query_history, so we pass it alongside `from`
+//                  rather than inside it.
 const traceDetailSearchSchema = z.object({
   span: z.string().optional(),
+  from: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  tab: z.enum(["overview", "traces", "explore", "tail"]).optional(),
 });
 
 const rootRoute = createRootRoute({
@@ -72,8 +87,15 @@ const traceDetailRoute = createRoute({
   validateSearch: traceDetailSearchSchema,
   component: function TraceDetailRoute() {
     const { traceId } = traceDetailRoute.useParams();
-    const { span } = traceDetailRoute.useSearch();
-    return <TraceView traceID={traceId} initialSpanID={span ?? null} />;
+    const { span, from, tab } = traceDetailRoute.useSearch();
+    return (
+      <TraceView
+        traceID={traceId}
+        initialSpanID={span ?? null}
+        fromHash={from ?? null}
+        fromTab={tab ?? null}
+      />
+    );
   },
 });
 
