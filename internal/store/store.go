@@ -1,6 +1,14 @@
 package store
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrNotFound is returned by lookup-style methods (e.g. by-hash query
+// history) when the requested row doesn't exist. Callers map this to
+// HTTP 404 at the API layer.
+var ErrNotFound = errors.New("not found")
 
 // TraceFilter scopes the trace list query.
 type TraceFilter struct {
@@ -74,6 +82,10 @@ type Store interface {
 	// `limit`. No cursor pagination yet — the set is bounded by the prune
 	// cap in RecordQueryRun.
 	ListQueryHistory(ctx context.Context, limit int) ([]QueryHistoryEntry, error)
+	// GetQueryHistoryByHash fetches a single dedup'd row by its content
+	// hash. Returns ErrNotFound when the hash isn't present (which can
+	// happen if the row was pruned out by the query_history cap).
+	GetQueryHistoryByHash(ctx context.Context, hash []byte) (QueryHistoryEntry, error)
 
 	Retain(ctx context.Context, olderThanNS int64) error
 	Clear(ctx context.Context) error

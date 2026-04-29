@@ -117,6 +117,13 @@ export interface QueryResult {
   rows: unknown[][];
   has_bucket: boolean;
   group_keys?: string[];
+  /**
+   * Hex SHA-256 of the canonicalized query AST. Server-set when the run
+   * was recorded in query_history (i.e. when the request had a non-empty
+   * SELECT). Threaded as ?from=<hash> on trace links so the trace view
+   * can recover the originating query for "filter by".
+   */
+  history_hash?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +572,31 @@ export function summarizeOrderBy(o: Order[]): string {
  * active tab in history). Returns a partial suitable for TanStack
  * Router's search param.
  */
+/**
+ * Append `next` to `existing`, skipping if a filter with the same
+ * (field, op, value) is already present. Used by the "filter by"
+ * affordance on attribute panels: clicking the same value twice
+ * shouldn't pile up duplicates, but distinct values on the same field
+ * are appended (they form an AND — possibly unsatisfiable, which the
+ * user can fix in the WhereEditor; silent rewriting is worse).
+ */
+export function appendWhere(existing: Filter[] | undefined, next: Filter): Filter[] {
+  const list = existing ?? [];
+  const isDup = list.some(
+    (f) => f.field === next.field && f.op === next.op && filterValueEq(f.value, next.value),
+  );
+  return isDup ? list : [...list, next];
+}
+
+function filterValueEq(a: Filter["value"], b: Filter["value"]): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  return a === b;
+}
+
 export function queryToUrlSearch(q: Query): Partial<QuerySearch> {
   const fromMs = q.time_range?.from ? new Date(q.time_range.from).getTime() : undefined;
   const toMs = q.time_range?.to ? new Date(q.time_range.to).getTime() : undefined;

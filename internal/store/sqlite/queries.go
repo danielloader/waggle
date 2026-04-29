@@ -1267,6 +1267,26 @@ func (s *Store) RecordQueryRun(ctx context.Context, dataset, queryJSON, displayT
 	return nil
 }
 
+// GetQueryHistoryByHash fetches a single query_history row by its
+// content hash. Returns store.ErrNotFound when the row was pruned out
+// or never existed.
+func (s *Store) GetQueryHistoryByHash(ctx context.Context, hash []byte) (store.QueryHistoryEntry, error) {
+	const q = `SELECT id, dataset, query_json, display_text, run_count, first_run_ns, last_run_ns
+		FROM query_history WHERE hash = ?`
+	var e store.QueryHistoryEntry
+	err := s.reader.QueryRowContext(ctx, q, hash).Scan(
+		&e.ID, &e.Dataset, &e.QueryJSON, &e.DisplayText,
+		&e.RunCount, &e.FirstRunNS, &e.LastRunNS,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.QueryHistoryEntry{}, store.ErrNotFound
+	}
+	if err != nil {
+		return store.QueryHistoryEntry{}, err
+	}
+	return e, nil
+}
+
 // ListQueryHistory returns rows ordered by last_run_ns DESC, capped at limit.
 func (s *Store) ListQueryHistory(ctx context.Context, limit int) ([]store.QueryHistoryEntry, error) {
 	if limit <= 0 || limit > queryHistoryCap {

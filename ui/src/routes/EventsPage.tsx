@@ -17,11 +17,13 @@ import {
   type SelectedRow,
 } from "../features/query/EventsTable";
 import {
+  appendWhere,
   bucketMsFor,
   buildCountQuery,
   refreshIntervalMs,
   resolveSearchRange,
   runQuery,
+  type Filter,
   type QueryResult,
   type QuerySearch,
 } from "../lib/query";
@@ -146,6 +148,29 @@ export function EventsPage() {
     enabled: committedSearch.dataset !== "metrics" || hasMetricField(committedSearch),
   });
 
+  // Hex content-hash of the most recent successful chart run. Threaded
+  // into trace links as ?from=<hash> so the trace view's "filter by"
+  // affordance can recover the originating query and merge in a new
+  // WHERE clause. Cleared while a fresh query is in flight so we never
+  // attribute a click to a stale source query.
+  const historyHash = chart.data?.history_hash ?? null;
+
+  // In-page "filter by" — fired from the log/metric detail pane's
+  // AttributesPanel. Same dedup-and-append semantics as the trace view's
+  // cross-route version, but no fetch needed since the source query is
+  // already on screen. Sets both `search` (URL) and `committedSearch`
+  // (active query) and bumps runCount so the chart + table refetch
+  // immediately, mirroring the Run button's behaviour.
+  const applyInPageFilter = (f: Filter) => {
+    const next: QuerySearch = {
+      ...search,
+      where: appendWhere(search.where, f),
+    };
+    setSearch(next);
+    setCommittedSearch(next);
+    setRunCount((c) => c + 1);
+  };
+
   const resolved = resolveSearchRange(search);
   const handleBucketClick = (tMs: number) => {
     const bucketMs = bucketMsFor(resolved.durationMs, search.granularity);
@@ -227,6 +252,7 @@ export function EventsPage() {
             search={search}
             querySearch={committedSearch}
             runCount={runCount}
+            historyHash={historyHash}
             onTabChange={(tab) => setSearch({ ...search, tab })}
             onExploreScrollY={handleExploreScrollY}
             selectedRow={detailPaneEligible ? selectedRow : null}
@@ -247,12 +273,16 @@ export function EventsPage() {
               columns={pane.columns}
               row={pane.row}
               onClose={() => setSelectedRow(null)}
+              onFilter={applyInPageFilter}
+              historyHash={historyHash}
+              currentTab={search.tab}
             />
           ) : (
             <MetricDetailPane
               columns={pane.columns}
               row={pane.row}
               onClose={() => setSelectedRow(null)}
+              onFilter={applyInPageFilter}
             />
           )}
         </div>

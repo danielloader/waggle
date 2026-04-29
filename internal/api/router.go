@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -33,6 +35,7 @@ func (rt *Router) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/logs/search", rt.searchLogs)
 	mux.HandleFunc("POST /api/query", rt.runQuery)
 	mux.HandleFunc("GET /api/history", rt.listHistory)
+	mux.HandleFunc("GET /api/history/{hash}", rt.getHistoryByHash)
 	mux.HandleFunc("POST /api/clear", rt.clear)
 }
 
@@ -60,28 +63,65 @@ func (rt *Router) runQuery(w http.ResponseWriter, r *http.Request) {
 	// Record the run in query_history (best-effort — don't fail the user
 	// query on a history bookkeeping error). Skip raw-rows mode; a bare
 	// "browse the table" isn't something the user wants back in their
-	// recent-queries list.
+	// recent-queries list. Surface the hash on the response so the UI
+	// can thread it through trace links as a source-query shortcode.
 	if len(q.Select) > 0 {
-		rt.recordHistory(r.Context(), &q)
+		if hash := rt.recordHistory(r.Context(), &q); hash != nil {
+			res.HistoryHash = hex.EncodeToString(hash)
+		}
 	}
 	writeJSON(w, http.StatusOK, res)
 }
 
-func (rt *Router) recordHistory(ctx context.Context, q *query.Query) {
+// recordHistory upserts the run into query_history and returns the
+// content hash. Returns nil on any bookkeeping error — the caller
+// continues regardless.
+func (rt *Router) recordHistory(ctx context.Context, q *query.Query) []byte {
 	hash, err := query.HashQuery(q)
 	if err != nil {
 		rt.log.Debug("history hash failed", "err", err)
-		return
+		return nil
 	}
 	raw, err := json.Marshal(q)
 	if err != nil {
 		rt.log.Debug("history marshal failed", "err", err)
-		return
+		return nil
 	}
 	display := query.FormatDisplay(q)
 	if err := rt.store.RecordQueryRun(ctx, string(q.Dataset), string(raw), display, hash); err != nil {
 		rt.log.Debug("history write failed", "err", err)
+		return nil
 	}
+	return hash
+}
+
+// getHistoryByHash returns a single query_history entry keyed by the
+// hex-encoded SHA-256 content hash. Used by the trace-view "filter by"
+// flow to recover the originating query without round-tripping the
+// full QuerySearch through the URL.
+func (rt *Router) getHistoryByHash(w http.ResponseWriter, r *http.Request) {
+	raw := strings.ToLower(r.PathValue("hash"))
+	hash, err := hex.DecodeString(raw)
+	if err != nil || len(hash) != 32 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": "invalid hash: expected 64 lowercase hex characters",
+			"hash":  raw,
+		})
+		return
+	}
+	entry, err := rt.store.GetQueryHistoryByHash(r.Context(), hash)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "query history entry not found",
+			"hash":  raw,
+		})
+		return
+	}
+	if err != nil {
+		rt.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entry)
 }
 
 func (rt *Router) listHistory(w http.ResponseWriter, r *http.Request) {

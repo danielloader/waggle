@@ -647,6 +647,73 @@ func anyInt(v any) int64 {
 	return 0
 }
 
+func TestAPI_HistoryByHash(t *testing.T) {
+	f := newAPIFixture(t)
+
+	// Need a query run on disk before there's a hash to look up. Seed one
+	// span so the query has something to count.
+	now := time.Now().UnixNano()
+	batch := store.Batch{
+		Resources: []store.Resource{{ID: 1, ServiceName: "widget",
+			AttributesJSON: `{"service.name":"widget"}`, FirstSeenNS: now, LastSeenNS: now}},
+		Scopes: []store.Scope{{ID: 1, Name: "lib"}},
+		Events: []store.Event{spanEvent(
+			[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			[]byte{1, 1, 1, 1, 1, 1, 1, 1}, nil,
+			"widget", "GET /", "SERVER", 0, now, now+1_000_000, "", "{}"),
+		},
+	}
+	if err := f.st.WriteBatch(f.ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fmt.Sprintf(`{
+		"dataset":"spans",
+		"time_range":{"from":%d,"to":%d},
+		"select":[{"op":"count"}]
+	}`, now-1_000_000_000, now+1_000_000_000)
+
+	var run store.QueryResult
+	if status := postJSON(t, f.srv.URL+"/api/query", body, &run); status != http.StatusOK {
+		t.Fatalf("query status %d", status)
+	}
+	if run.HistoryHash == "" {
+		t.Fatalf("expected history_hash on query response, got empty")
+	}
+	if len(run.HistoryHash) != 64 {
+		t.Errorf("history_hash length: want 64, got %d (%q)", len(run.HistoryHash), run.HistoryHash)
+	}
+
+	// Happy path: round-trip the hash.
+	var entry store.QueryHistoryEntry
+	if status := f.getJSON("/api/history/"+run.HistoryHash, &entry); status != http.StatusOK {
+		t.Fatalf("get-by-hash status %d", status)
+	}
+	if entry.Dataset != "spans" {
+		t.Errorf("dataset: want spans, got %q", entry.Dataset)
+	}
+	if entry.RunCount < 1 {
+		t.Errorf("run_count: want >=1, got %d", entry.RunCount)
+	}
+	if !strings.Contains(entry.QueryJSON, `"dataset":"spans"`) {
+		t.Errorf("query_json missing dataset: %q", entry.QueryJSON)
+	}
+
+	// 400 on malformed hex.
+	if status := f.getJSON("/api/history/notahash", nil); status != http.StatusBadRequest {
+		t.Errorf("malformed hash: want 400, got %d", status)
+	}
+	// 400 on wrong length (32 hex chars = 16 bytes, not 32).
+	if status := f.getJSON("/api/history/0102030405060708090a0b0c0d0e0f10", nil); status != http.StatusBadRequest {
+		t.Errorf("short hash: want 400, got %d", status)
+	}
+	// 404 on a well-formed but unknown hash.
+	bogus := strings.Repeat("ab", 32)
+	if status := f.getJSON("/api/history/"+bogus, nil); status != http.StatusNotFound {
+		t.Errorf("unknown hash: want 404, got %d", status)
+	}
+}
+
 func TestAPI_Traces_Pagination(t *testing.T) {
 	f := newAPIFixture(t)
 

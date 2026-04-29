@@ -18,15 +18,36 @@ import { SpanDetail } from "./SpanDetail";
 import { WaterfallToolbar } from "./WaterfallToolbar";
 import { TraceSummary } from "./TraceSummary";
 
+/** Tab IDs that round-trip through the trace URL — kept in sync with
+ *  ResultTabs' TabID and querySearchSchema.tab. Passed through filter-by
+ *  so the user lands back on the tab they clicked from. */
+type FromTab = "overview" | "traces" | "explore" | "tail";
+
 interface Props {
   traceID: string;
   /** When set, once the trace loads we select this span, scroll it into
    *  view, and uncollapse its ancestors. Used for deep links from log
    *  rows ("?span=<id>"). */
   initialSpanID?: string | null;
+  /**
+   * Hex content-hash of the /events query the user came from. Threaded
+   * down to SpanDetail so the "filter by" button can fetch the
+   * originating QuerySearch from /api/history/<hash>, merge in the new
+   * filter, and navigate back. Null when the trace was deep-linked from
+   * outside.
+   */
+  fromHash?: string | null;
+  /** Originating /events tab. UI-only state, not in the Query AST, so
+   *  it rides alongside fromHash through the trace URL. */
+  fromTab?: FromTab | null;
 }
 
-export function TraceView({ traceID, initialSpanID = null }: Props) {
+export function TraceView({
+  traceID,
+  initialSpanID = null,
+  fromHash = null,
+  fromTab = null,
+}: Props) {
   const query = useQuery({
     queryKey: ["trace", traceID],
     queryFn: ({ signal }) => api.getTrace(traceID, signal),
@@ -268,6 +289,8 @@ export function TraceView({ traceID, initialSpanID = null }: Props) {
             onSelectEvent={setSelectedEventIdx}
             activeTab={activeTab}
             onTabChange={setActiveTab}
+            fromHash={fromHash}
+            fromTab={fromTab}
           />
         </div>
       </div>
