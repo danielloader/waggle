@@ -69,14 +69,18 @@ kos:
     env:
       # Container defaults: listen on all interfaces (Docker NAT), write
       # the SQLite file under /data (expect a volume mount), and skip the
-      # browser-open (no TTY anyway, but explicit beats implicit).
+      # browser-open (no TTY anyway, but explicit beats implicit). The
+      # gRPC ingest also has to bind 0.0.0.0 — the in-process default
+      # 127.0.0.1:4317 would be unreachable from the host even with
+      # `-p 4317:4317`.
       - WAGGLE_ADDR=0.0.0.0:4318
+      - WAGGLE_GRPC_ADDR=0.0.0.0:4317
       - WAGGLE_DB=/data/waggle.db
       - WAGGLE_NO_OPEN=true
     labels:
       org.opencontainers.image.source: https://github.com/danielloader/waggle
       org.opencontainers.image.title: waggle
-      org.opencontainers.image.description: Local OpenTelemetry viewer — OTLP/HTTP ingest into SQLite + Honeycomb-style UI
+      org.opencontainers.image.description: Local OpenTelemetry viewer — OTLP/HTTP + OTLP/gRPC ingest into SQLite + Honeycomb-style UI
       org.opencontainers.image.licenses: GPL-3.0-only
     annotations:
       org.opencontainers.image.source: https://github.com/danielloader/waggle
@@ -107,7 +111,7 @@ release:
   header: |
     ## waggle {{ .Tag }}
 
-    Local OpenTelemetry viewer — OTLP/HTTP ingest into SQLite + Honeycomb-style UI.
+    Local OpenTelemetry viewer — OTLP/HTTP (4318) and OTLP/gRPC (4317) ingest into SQLite + Honeycomb-style UI.
   footer: |
     ### Install
 
@@ -118,7 +122,7 @@ release:
 
     **Docker**
     ```
-    docker run --rm -p 4318:4318 -v $(pwd)/data:/data ghcr.io/danielloader/waggle:{{ .Version }}
+    docker run --rm -p 4318:4318 -p 4317:4317 -v $(pwd)/data:/data ghcr.io/danielloader/waggle:{{ .Version }}
     ```
 
-    Then point any OTLP/HTTP exporter at `http://localhost:4318` and open the UI in your browser.
+    Then point any OTLP exporter at `http://localhost:4318` (HTTP) or `localhost:4317` (gRPC), and open the UI in your browser.

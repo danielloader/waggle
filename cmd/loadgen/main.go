@@ -28,8 +28,12 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	otelmetric "go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -40,7 +44,8 @@ import (
 
 func main() {
 	var (
-		endpoint        = flag.String("endpoint", "127.0.0.1:4318", "OTLP/HTTP host:port to send to")
+		endpoint        = flag.String("endpoint", "127.0.0.1:4318", "OTLP host:port to send to (defaults match --protocol: 4318 for http, 4317 for grpc)")
+		protocol        = flag.String("protocol", "http", "OTLP transport: http (HTTP/protobuf on 4318) or grpc (4317)")
 		insecure        = flag.Bool("insecure", true, "Use http:// instead of https://")
 		rate            = flag.Float64("rate", 5.0, "Target traces emitted per second (0 disables)")
 		logsRate        = flag.Float64("logs-rate", 0, "Target log records emitted per second (0 disables)")
@@ -76,6 +81,16 @@ func main() {
 	if *rate == 0 && *logsRate == 0 && !*metricsEnable {
 		log.Fatalf("nothing to do: --rate, --logs-rate and --metrics all disabled")
 	}
+	switch *protocol {
+	case "http", "grpc":
+	default:
+		log.Fatalf("--protocol must be 'http' or 'grpc', got %q", *protocol)
+	}
+	// If the user kept the default endpoint but switched protocol, swap the
+	// port to the OTLP convention so `--protocol grpc` Just Works.
+	if *protocol == "grpc" && *endpoint == "127.0.0.1:4318" {
+		*endpoint = "127.0.0.1:4317"
+	}
 	if *jitter < 0 || *jitter > 1 {
 		log.Fatalf("--jitter must be in [0.0, 1.0]")
 	}
@@ -90,7 +105,7 @@ func main() {
 
 	// One tracer provider per unique service — so each template's spans get
 	// the right resource attached. Real SDK semantics.
-	providers, err := buildProviders(templates, *endpoint, *insecure)
+	providers, err := buildProviders(templates, *endpoint, *protocol, *insecure)
 	if err != nil {
 		log.Fatalf("build providers: %v", err)
 	}
@@ -111,7 +126,7 @@ func main() {
 	if *logsRate > 0 && len(logTemplates) == 0 {
 		log.Fatalf("no log templates matched --services=%q", *servicesFlag)
 	}
-	logProviders, err := buildLogProvidersForServices(templates, *endpoint, *insecure)
+	logProviders, err := buildLogProvidersForServices(templates, *endpoint, *protocol, *insecure)
 	if err != nil {
 		log.Fatalf("build log providers: %v", err)
 	}
@@ -132,7 +147,7 @@ func main() {
 		requestCounters map[string]otelmetric.Int64Counter
 	)
 	if *metricsEnable {
-		metricProviders, err = buildMetricProvidersForServices(templates, *endpoint, *insecure, *metricsInterval)
+		metricProviders, err = buildMetricProvidersForServices(templates, *endpoint, *protocol, *insecure, *metricsInterval)
 		if err != nil {
 			log.Fatalf("build metric providers: %v", err)
 		}
@@ -299,18 +314,14 @@ func jitterDuration(base time.Duration, jitter float64) time.Duration {
 // service in the trace-template set. Uses a PeriodicReader so the
 // exporter pushes on a short fixed interval, matching the cadence of
 // the log + trace exporters.
-func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool, interval time.Duration) (map[string]*sdkmetric.MeterProvider, error) {
+func buildMetricProvidersForServices(tpls []TraceTemplate, endpoint, protocol string, insecure bool, interval time.Duration) (map[string]*sdkmetric.MeterProvider, error) {
 	byService := map[string]*sdkmetric.MeterProvider{}
 	services := map[string]struct{}{}
 	for _, t := range tpls {
 		services[t.Service] = struct{}{}
 	}
 	for service := range services {
-		opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
-		if insecure {
-			opts = append(opts, otlpmetrichttp.WithInsecure())
-		}
-		exp, err := otlpmetrichttp.New(context.Background(), opts...)
+		exp, err := newMetricExporter(endpoint, protocol, insecure)
 		if err != nil {
 			return nil, fmt.Errorf("metric exporter for %s: %w", service, err)
 		}
@@ -483,7 +494,7 @@ func fnv32(s string) uint32 {
 // service.name resource. Using trace templates (not log templates) as the
 // service set ensures every service that can emit a span can also emit a
 // log — independent of whether the log-only background loop is active.
-func buildLogProvidersForServices(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdklog.LoggerProvider, error) {
+func buildLogProvidersForServices(tpls []TraceTemplate, endpoint, protocol string, insecure bool) (map[string]*sdklog.LoggerProvider, error) {
 	byService := map[string]*sdklog.LoggerProvider{}
 	services := map[string]struct{}{}
 	for _, t := range tpls {
@@ -491,11 +502,7 @@ func buildLogProvidersForServices(tpls []TraceTemplate, endpoint string, insecur
 	}
 
 	for service := range services {
-		opts := []otlploghttp.Option{otlploghttp.WithEndpoint(endpoint)}
-		if insecure {
-			opts = append(opts, otlploghttp.WithInsecure())
-		}
-		exp, err := otlploghttp.New(context.Background(), opts...)
+		exp, err := newLogExporter(endpoint, protocol, insecure)
 		if err != nil {
 			return nil, fmt.Errorf("log exporter for %s: %w", service, err)
 		}
@@ -519,7 +526,7 @@ func buildLogProvidersForServices(tpls []TraceTemplate, endpoint string, insecur
 	return byService, nil
 }
 
-func buildProviders(tpls []TraceTemplate, endpoint string, insecure bool) (map[string]*sdktrace.TracerProvider, error) {
+func buildProviders(tpls []TraceTemplate, endpoint, protocol string, insecure bool) (map[string]*sdktrace.TracerProvider, error) {
 	byService := map[string]*sdktrace.TracerProvider{}
 	services := map[string]struct{}{}
 	for _, t := range tpls {
@@ -527,11 +534,7 @@ func buildProviders(tpls []TraceTemplate, endpoint string, insecure bool) (map[s
 	}
 
 	for service := range services {
-		opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
-		if insecure {
-			opts = append(opts, otlptracehttp.WithInsecure())
-		}
-		exp, err := otlptracehttp.New(context.Background(), opts...)
+		exp, err := newTraceExporter(endpoint, protocol, insecure)
 		if err != nil {
 			return nil, fmt.Errorf("exporter for %s: %w", service, err)
 		}
@@ -602,6 +605,57 @@ func reportThroughput(ctx context.Context, emitted, failed, logsEmitted *atomic.
 			lastTime = now
 		}
 	}
+}
+
+// newTraceExporter returns the OTLP trace exporter matching --protocol.
+func newTraceExporter(endpoint, protocol string, insecure bool) (sdktrace.SpanExporter, error) {
+	ctx := context.Background()
+	if protocol == "grpc" {
+		opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
+		if insecure {
+			opts = append(opts, otlptracegrpc.WithInsecure())
+		}
+		return otlptrace.New(ctx, otlptracegrpc.NewClient(opts...))
+	}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
+	if insecure {
+		opts = append(opts, otlptracehttp.WithInsecure())
+	}
+	return otlptracehttp.New(ctx, opts...)
+}
+
+// newLogExporter returns the OTLP log exporter matching --protocol.
+func newLogExporter(endpoint, protocol string, insecure bool) (sdklog.Exporter, error) {
+	ctx := context.Background()
+	if protocol == "grpc" {
+		opts := []otlploggrpc.Option{otlploggrpc.WithEndpoint(endpoint)}
+		if insecure {
+			opts = append(opts, otlploggrpc.WithInsecure())
+		}
+		return otlploggrpc.New(ctx, opts...)
+	}
+	opts := []otlploghttp.Option{otlploghttp.WithEndpoint(endpoint)}
+	if insecure {
+		opts = append(opts, otlploghttp.WithInsecure())
+	}
+	return otlploghttp.New(ctx, opts...)
+}
+
+// newMetricExporter returns the OTLP metric exporter matching --protocol.
+func newMetricExporter(endpoint, protocol string, insecure bool) (sdkmetric.Exporter, error) {
+	ctx := context.Background()
+	if protocol == "grpc" {
+		opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(endpoint)}
+		if insecure {
+			opts = append(opts, otlpmetricgrpc.WithInsecure())
+		}
+		return otlpmetricgrpc.New(ctx, opts...)
+	}
+	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(endpoint)}
+	if insecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+	return otlpmetrichttp.New(ctx, opts...)
 }
 
 // Accept an "env-var mode" for the endpoint, matching the OTel convention, so
