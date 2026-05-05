@@ -14,6 +14,7 @@ type Config struct {
 	Addr          string
 	IngestAddr    string
 	UIAddr        string
+	GRPCAddr      string
 	NoOpenBrowser bool
 	Retention     time.Duration
 	LogLevel      string
@@ -38,6 +39,7 @@ func Load() (*Config, error) {
 	flag.StringVar(&c.Addr, "addr", envOr("WAGGLE_ADDR", "127.0.0.1:4318"), "Bind address for UI, API, and OTLP ingest")
 	flag.StringVar(&c.IngestAddr, "ingest-addr", envOr("WAGGLE_INGEST_ADDR", ""), "Override address for OTLP ingest (default: same as --addr)")
 	flag.StringVar(&c.UIAddr, "ui-addr", envOr("WAGGLE_UI_ADDR", ""), "Override address for UI + API (default: same as --addr)")
+	flag.StringVar(&c.GRPCAddr, "grpc-addr", envOr("WAGGLE_GRPC_ADDR", "127.0.0.1:4317"), "Bind address for OTLP/gRPC ingest (empty to disable)")
 	flag.BoolVar(&c.NoOpenBrowser, "no-open-browser", envBool("WAGGLE_NO_OPEN", false), "Do not auto-open a browser on startup")
 	retentionStr := flag.String("retention", envOr("WAGGLE_RETENTION", "24h"), "Drop data older than this")
 	flag.StringVar(&c.LogLevel, "log-level", envOr("WAGGLE_LOG_LEVEL", "info"), "slog level: debug, info, warn, error")

@@ -30,15 +30,17 @@
 <p align="center">
 Local OpenTelemetry viewer inspired by Honeycomb — named for the
   <a href="https://en.wikipedia.org/wiki/Waggle_dance">waggle dance</a> bees
-  use to share locations. Run it next to your service, point any OTLP/HTTP
-  exporter at <code>http://localhost:4318</code>, and browse a Honeycomb-style
+  use to share locations. Run it next to your service, point any OTLP
+  exporter at <code>http://localhost:4318</code> (HTTP) or
+  <code>localhost:4317</code> (gRPC), and browse a Honeycomb-style
   trace waterfall, log explorer, metrics browser, and structured query
   builder in the same tab.
 </p>
 
 - Single static binary — pure Go, no CGO, no Docker required, no Node at runtime.
 - OTLP/HTTP ingest (protobuf + JSON) on `POST /v1/traces`, `POST /v1/logs`,
-  and `POST /v1/metrics`.
+  and `POST /v1/metrics` (port 4318), plus OTLP/gRPC on port 4317. Both
+  transports share the same writer pipeline.
 - **Wide-event storage.** All signals land in two SQLite tables — `events`
   (spans + logs, with virtual columns for `signal_type`, `span_kind`, etc.)
   and `metric_events` (Honeycomb-style: the metric's name is an attribute
@@ -127,7 +129,7 @@ declines within that view.
 **Docker** — images are published to GitHub Container Registry:
 
 ```sh
-docker run --rm -p 4318:4318 -v $(pwd)/data:/data \
+docker run --rm -p 4318:4318 -p 4317:4317 -v $(pwd)/data:/data \
   ghcr.io/danielloader/waggle:latest
 ```
 
@@ -147,14 +149,16 @@ waggle
 
 The UI assets are built by Vite and embedded into the binary during the
 normal release / `go tool task build` flow. `go install` bypasses that
-step, so the resulting binary serves the OTLP/HTTP ingest endpoints and
+step, so the resulting binary serves the OTLP ingest endpoints and
 the `/api/*` surface, but `/` returns "UI not built". Handy for
 agent-like deployments where only the ingest + API are needed — and
 quick to bootstrap without Node. For the browser UI, use a release
 archive, Docker, or a full source build.
 
-Once running, open `http://localhost:4318` and point any OTLP/HTTP exporter
-(OpenTelemetry SDK defaults work) at the same URL.
+Once running, open `http://localhost:4318` and point any OTLP exporter
+at it: HTTP/protobuf or HTTP/JSON on `:4318`, or gRPC on `:4317` (the
+OTel SDK default). Set `WAGGLE_GRPC_ADDR=""` to disable the gRPC
+listener if you only want HTTP.
 
 ## Usage
 
@@ -256,9 +260,10 @@ All flags have matching environment variables. Flags take precedence.
 | Flag | Env | Default | Notes |
 | --- | --- | --- | --- |
 | `--db-path` | `WAGGLE_DB` | `./waggle.db` | SQLite file path. |
-| `--addr` | `WAGGLE_ADDR` | `127.0.0.1:4318` | Bind address for UI, API, and OTLP ingest. |
-| `--ingest-addr` | `WAGGLE_INGEST_ADDR` | — | Override to split OTLP ingest onto its own listener. |
+| `--addr` | `WAGGLE_ADDR` | `127.0.0.1:4318` | Bind address for UI, API, and OTLP/HTTP ingest. |
+| `--ingest-addr` | `WAGGLE_INGEST_ADDR` | — | Override to split OTLP/HTTP ingest onto its own listener. |
 | `--ui-addr` | `WAGGLE_UI_ADDR` | — | Override to split the UI + API onto its own listener. |
+| `--grpc-addr` | `WAGGLE_GRPC_ADDR` | `127.0.0.1:4317` | Bind address for OTLP/gRPC ingest. Empty string disables. |
 | `--no-open-browser` | `WAGGLE_NO_OPEN` | `false` | Skip the browser auto-open on startup. |
 | `--retention` | `WAGGLE_RETENTION` | `24h` | Drop data older than this (Go duration; `0` disables). |
 | `--log-level` | `WAGGLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
@@ -270,13 +275,15 @@ All flags have matching environment variables. Flags take precedence.
 | `--tee-color` | `WAGGLE_TEE_COLOR` | `auto` | ANSI colour for `console` format: `auto` (TTY-detect), `always`, `never`. |
 
 When `--ingest-addr` and `--ui-addr` differ, waggle binds two HTTP listeners;
-otherwise a single listener serves everything on `--addr`.
+otherwise a single listener serves everything on `--addr`. The OTLP/gRPC
+listener is independent of the HTTP split — it always binds `--grpc-addr`
+on its own port (4317 by convention).
 
 ## Development
 
 ```sh
 # Go (hot-reload via air) + Vite dev server, concurrently.
-# Go listens on :4318, Vite on :5173 with /v1 and /api proxied to Go.
+# Go listens on :4318 (HTTP) + :4317 (gRPC), Vite on :5173 with /v1 and /api proxied to Go.
 go tool task dev
 ```
 
@@ -307,8 +314,9 @@ Useful targets:
 
 `cmd/loadgen` is a small OTel client that drives realistic trace / log /
 metric traffic at a running waggle. It uses the real OTel Go SDK
-(`otlptracehttp`, `otlploghttp`, `otlpmetrichttp`), so the resulting
-payloads exercise the full ingest path.
+(`otlptracehttp`/`grpc`, `otlploghttp`/`grpc`, `otlpmetrichttp`/`grpc`)
+and switches transport with `--protocol http|grpc`, so the resulting
+payloads exercise the full ingest path on either listener.
 
 ```sh
 # Default: 5 traces/s, no logs, metrics every second
@@ -342,10 +350,10 @@ cmd/
 internal/
   api/          # JSON API for the UI (/api/*)
   config/       # flag + env parsing
-  ingest/       # OTLP/HTTP decode + buffered writer
+  ingest/       # OTLP/HTTP decode + OTLP/gRPC handler + buffered writer
   otlp/         # OTLP -> internal model transform
   query/        # structured query builder (validates + compiles to SQL)
-  server/       # HTTP wiring (ingest + UI/API listeners)
+  server/       # HTTP + gRPC wiring (ingest + UI/API listeners)
   store/        # storage seam + SQLite implementation (schema, queries)
   ui/           # embedded React build (//go:embed all:dist)
 ui/             # Vite + React + TanStack Router + Tailwind source

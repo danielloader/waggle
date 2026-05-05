@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/pprof"
 	"time"
+
+	"google.golang.org/grpc"
 
 	"github.com/danielloader/waggle/internal/api"
 	"github.com/danielloader/waggle/internal/config"
@@ -22,15 +25,25 @@ type Server struct {
 	log   *slog.Logger
 	store store.Store
 
-	ingestHandler *ingest.Handler
-	apiRouter     *api.Router
+	ingestHandler     *ingest.Handler
+	ingestGRPCHandler *ingest.GRPCHandler
+	apiRouter         *api.Router
 
-	ingestSrv *http.Server
-	uiSrv     *http.Server
+	ingestSrv     *http.Server
+	uiSrv         *http.Server
+	ingestGRPCSrv *grpc.Server
+	ingestGRPCLis net.Listener
 }
 
 func New(cfg *config.Config, log *slog.Logger, st store.Store, ih *ingest.Handler, ar *api.Router) *Server {
 	return &Server{cfg: cfg, log: log, store: st, ingestHandler: ih, apiRouter: ar}
+}
+
+// WithGRPC attaches the OTLP gRPC handler. Pass nil (or omit the call) to
+// keep the gRPC listener disabled. Chainable.
+func (s *Server) WithGRPC(h *ingest.GRPCHandler) *Server {
+	s.ingestGRPCHandler = h
+	return s
 }
 
 // Start binds the listeners and begins serving. It returns once both
@@ -58,9 +71,31 @@ func (s *Server) Start(ctx context.Context) error {
 		s.uiSrv = httpServer(s.cfg.Addr, combined)
 	}
 
+	if err := s.bindGRPC(); err != nil {
+		return err
+	}
+
 	if err := s.listen(); err != nil {
 		return err
 	}
+	return nil
+}
+
+// bindGRPC creates the listener + grpc.Server when both an address and a
+// handler are configured. Listening fails fast so port conflicts surface
+// before Start returns.
+func (s *Server) bindGRPC() error {
+	if s.cfg.GRPCAddr == "" || s.ingestGRPCHandler == nil {
+		return nil
+	}
+	lis, err := net.Listen("tcp", s.cfg.GRPCAddr)
+	if err != nil {
+		return fmt.Errorf("grpc listen %s: %w", s.cfg.GRPCAddr, err)
+	}
+	srv := grpc.NewServer()
+	s.ingestGRPCHandler.Register(srv)
+	s.ingestGRPCLis = lis
+	s.ingestGRPCSrv = srv
 	return nil
 }
 
@@ -73,6 +108,14 @@ func (s *Server) listen() error {
 			}
 		}()
 	}
+	if s.ingestGRPCSrv != nil {
+		go func() {
+			s.log.Info("grpc listening", "addr", s.ingestGRPCLis.Addr().String())
+			if err := s.ingestGRPCSrv.Serve(s.ingestGRPCLis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+				s.log.Error("grpc server exited", "err", err)
+			}
+		}()
+	}
 	go func() {
 		s.log.Info("ui/api listening", "addr", s.uiSrv.Addr)
 		if err := s.uiSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -82,7 +125,7 @@ func (s *Server) listen() error {
 	return nil
 }
 
-// Shutdown triggers a graceful shutdown of both listeners.
+// Shutdown triggers a graceful shutdown of all listeners.
 func (s *Server) Shutdown(ctx context.Context) error {
 	var firstErr error
 	if s.ingestSrv != nil {
@@ -93,6 +136,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.uiSrv != nil {
 		if err := s.uiSrv.Shutdown(ctx); err != nil && firstErr == nil {
 			firstErr = err
+		}
+	}
+	if s.ingestGRPCSrv != nil {
+		// grpc has no context-aware Shutdown — race GracefulStop against
+		// the deadline and fall back to Stop() so we still respect the
+		// caller's timeout.
+		done := make(chan struct{})
+		go func() {
+			s.ingestGRPCSrv.GracefulStop()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			s.ingestGRPCSrv.Stop()
+			<-done
 		}
 	}
 	return firstErr
@@ -124,6 +183,7 @@ func (s *Server) mountAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":          true,
 			"listen_addr": s.cfg.IngestAddr,
+			"grpc_addr":   s.cfg.GRPCAddr,
 		})
 	})
 	// pprof endpoints — gated on --dev so release binaries don't expose

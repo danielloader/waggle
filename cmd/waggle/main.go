@@ -66,8 +66,9 @@ func main() {
 	}
 
 	handler := ingest.NewHandler(writer, log).WithTee(tee)
+	grpcHandler := ingest.NewGRPCHandler(writer, log).WithTee(tee)
 	router := api.NewRouter(st, log)
-	srv := server.New(cfg, log, st, handler, router)
+	srv := server.New(cfg, log, st, handler, router).WithGRPC(grpcHandler)
 
 	if err := srv.Start(ctx); err != nil {
 		log.Error("failed to start server", "err", err)
