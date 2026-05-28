@@ -41,8 +41,10 @@ tasks:
     cmds:
       - cd {{.VITE_DIR}} && npm ci
       - cd {{.VITE_DIR}} && npm run build
-      - rm -rf {{.UI_DIST}}
+      # Clear stale hashed bundles but keep the tracked .gitkeep that holds
+      # the (otherwise gitignored) embed dir in the repo.
       - mkdir -p {{.UI_DIST}}
+      - find {{.UI_DIST}} -mindepth 1 ! -name .gitkeep -delete
       - cp -R {{.VITE_DIR}}/dist/. {{.UI_DIST}}/
     sources:
       - "{{.VITE_DIR}}/src/**/*"
