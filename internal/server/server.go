@@ -28,6 +28,7 @@ type Server struct {
 	ingestHandler     *ingest.Handler
 	ingestGRPCHandler *ingest.GRPCHandler
 	apiRouter         *api.Router
+	mcpHandler        http.Handler
 
 	ingestSrv     *http.Server
 	uiSrv         *http.Server
@@ -43,6 +44,13 @@ func New(cfg *config.Config, log *slog.Logger, st store.Store, ih *ingest.Handle
 // keep the gRPC listener disabled. Chainable.
 func (s *Server) WithGRPC(h *ingest.GRPCHandler) *Server {
 	s.ingestGRPCHandler = h
+	return s
+}
+
+// WithMCP attaches the read-only MCP HTTP handler, mounted at /mcp on the UI
+// listener. Pass nil (or omit the call) to leave the endpoint off. Chainable.
+func (s *Server) WithMCP(h http.Handler) *Server {
+	s.mcpHandler = h
 	return s
 }
 
@@ -198,6 +206,9 @@ func (s *Server) mountAPI(mux *http.ServeMux) {
 	}
 	if s.apiRouter != nil {
 		s.apiRouter.Mount(mux)
+	}
+	if s.mcpHandler != nil {
+		mux.Handle("/mcp", s.mcpHandler)
 	}
 }
 

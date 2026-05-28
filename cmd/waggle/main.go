@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,11 +16,23 @@ import (
 	"github.com/danielloader/waggle/internal/api"
 	"github.com/danielloader/waggle/internal/config"
 	"github.com/danielloader/waggle/internal/ingest"
+	"github.com/danielloader/waggle/internal/mcpserver"
 	"github.com/danielloader/waggle/internal/server"
 	"github.com/danielloader/waggle/internal/store/sqlite"
 )
 
 func main() {
+	// `waggle mcp` runs the read-only MCP server over stdio against a database
+	// file, for clients (e.g. Claude) that spawn the process directly. It must
+	// be handled before config.Load parses the global flag set.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCPStdio(os.Args[2:]); err != nil {
+			slog.Error("mcp stdio exited", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("invalid config", "err", err)
@@ -69,6 +82,10 @@ func main() {
 	grpcHandler := ingest.NewGRPCHandler(writer, log).WithTee(tee)
 	router := api.NewRouter(st, log)
 	srv := server.New(cfg, log, st, handler, router).WithGRPC(grpcHandler)
+	if cfg.MCPEnabled {
+		srv.WithMCP(mcpserver.New(st, log).HTTPHandler())
+		log.Info("mcp endpoint enabled", "path", "/mcp")
+	}
 
 	if err := srv.Start(ctx); err != nil {
 		log.Error("failed to start server", "err", err)
@@ -99,6 +116,39 @@ func main() {
 	if err := tee.Close(); err != nil {
 		log.Warn("tee close", "err", err)
 	}
+}
+
+// runMCPStdio serves the read-only MCP tools over stdio against a database
+// file. Logs go to stderr so stdout stays clean for the MCP protocol.
+func runMCPStdio(args []string) error {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	dbPath := fs.String("db-path", envOr("WAGGLE_DB", "./waggle.db"), "SQLite file path")
+	logLevel := fs.String("log-level", envOr("WAGGLE_LOG_LEVEL", "info"), "slog level: debug, info, warn, error")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	log := newLogger(*logLevel)
+	slog.SetDefault(log)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	st, err := sqlite.Open(ctx, *dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	log.Info("mcp stdio server starting", "db", *dbPath)
+	return mcpserver.New(st, log).RunStdio(ctx)
+}
+
+func envOr(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
+		return v
+	}
+	return def
 }
 
 func shouldOpenBrowser(cfg *config.Config) bool {
