@@ -48,6 +48,36 @@ archives:
       - README.md
       - LICENSE*
 
+nfpms:
+  - id: waggle
+    package_name: waggle
+    # nFPM only packages the linux artifacts of this build; darwin/windows
+    # are ignored. amd64 + arm64 both produce packages.
+    ids: [waggle]
+    maintainer: "Daniel Loader <hello@danielloader.uk>"
+    homepage: https://github.com/danielloader/waggle
+    description: |-
+      Local OpenTelemetry viewer for development.
+      OTLP/HTTP (4318) and OTLP/gRPC (4317) ingest into SQLite with a
+      Honeycomb-style trace/log/metric query UI, served from one binary.
+    license: GPL-3.0-only
+    # nFPM is bundled in goreleaser (zero-dependency); no rpmbuild/dpkg/fpm
+    # needed on the runner. Packages are unsigned — see the install notes.
+    formats:
+      - deb
+      - rpm
+      - apk
+      - archlinux
+    bindir: /usr/bin
+    # ConventionalFileName gives each packager its native arch naming
+    # (deb: amd64/arm64, rpm/apk: x86_64/aarch64).
+    file_name_template: "{{ .ConventionalFileName }}"
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/waggle/README.md
+      - src: LICENSE
+        dst: /usr/share/doc/waggle/LICENSE
+
 kos:
   - id: waggle-docker
     build: waggle

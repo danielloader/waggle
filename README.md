@@ -130,6 +130,25 @@ declines within that view.
 ./waggle
 ```
 
+**Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` are
+attached to each [release](https://github.com/danielloader/waggle/releases)
+(amd64 + arm64). They install the binary to `/usr/bin/waggle`. Packages are
+**unsigned**, so some installers want an explicit "allow untrusted" flag:
+
+```sh
+# Debian / Ubuntu
+sudo dpkg -i waggle_*_amd64.deb
+
+# Fedora / RHEL / openSUSE
+sudo rpm -i waggle-*.x86_64.rpm        # or: sudo dnf install ./waggle-*.x86_64.rpm
+
+# Alpine (unsigned, hence --allow-untrusted)
+sudo apk add --allow-untrusted waggle_*_x86_64.apk
+
+# Arch
+sudo pacman -U waggle-*-x86_64.pkg.tar.zst
+```
+
 **Docker** — images are published to GitHub Container Registry:
 
 ```sh
