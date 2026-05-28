@@ -171,6 +171,15 @@ func retentionSweep(ctx context.Context, log *slog.Logger, st *sqlite.Store, ret
 	if retention <= 0 {
 		return
 	}
+	sweep := func(now time.Time) {
+		cutoff := now.Add(-retention).UnixNano()
+		if err := st.Retain(ctx, cutoff); err != nil {
+			log.Warn("retention sweep failed", "err", err)
+		}
+	}
+	// Sweep once at startup so a restart doesn't leave stale data sitting for up
+	// to a full tick (and a sub-tick restart loop still culls).
+	sweep(time.Now())
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
 	for {
@@ -178,10 +187,7 @@ func retentionSweep(ctx context.Context, log *slog.Logger, st *sqlite.Store, ret
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			cutoff := now.Add(-retention).UnixNano()
-			if err := st.Retain(ctx, cutoff); err != nil {
-				log.Warn("retention sweep failed", "err", err)
-			}
+			sweep(now)
 		}
 	}
 }

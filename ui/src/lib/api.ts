@@ -102,6 +102,14 @@ async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function postJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { method: "POST", signal });
+  if (!res.ok) {
+    throw new HttpError(res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   listServices: (dataset: string, signal?: AbortSignal) =>
     getJSON<{ services: ServiceSummary[] }>(
@@ -147,6 +155,10 @@ export const api = {
   // can branch on `err.status === 404` to fall back gracefully.
   getHistoryByHash: (hash: string, signal?: AbortSignal) =>
     getJSON<QueryHistoryEntry>(`/api/history/${hash}`, signal),
+
+  // Wipe all ingested telemetry. Destructive; the caller confirms first.
+  clear: (signal?: AbortSignal) =>
+    postJSON<{ ok: boolean }>(`/api/clear`, signal),
 };
 
 export interface QueryHistoryEntry {
