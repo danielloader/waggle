@@ -20,6 +20,12 @@ type Config struct {
 	LogLevel      string
 	Dev           bool
 
+	// MCPEnabled mounts the read-only Model Context Protocol endpoint at
+	// /mcp on the UI listener, letting an MCP client (e.g. Claude) explore
+	// stored traces/metrics/logs. Defaults on; the surface is read-only and
+	// inherits the UI listener's bind address.
+	MCPEnabled bool
+
 	// Tee: mirror incoming log records to a file or stdout in one of
 	// several human-readable formats, so a dev can pipe them to `less`
 	// in a shell next to the UI. Tee is strictly a passthrough — what
@@ -44,6 +50,7 @@ func Load() (*Config, error) {
 	retentionStr := flag.String("retention", envOr("WAGGLE_RETENTION", "24h"), "Drop data older than this")
 	flag.StringVar(&c.LogLevel, "log-level", envOr("WAGGLE_LOG_LEVEL", "info"), "slog level: debug, info, warn, error")
 	flag.BoolVar(&c.Dev, "dev", false, "Dev mode: do not serve embedded UI and do not open browser")
+	flag.BoolVar(&c.MCPEnabled, "mcp", envBool("WAGGLE_MCP", true), "Serve the read-only MCP endpoint at /mcp on the UI listener")
 
 	flag.StringVar(&c.TeePath, "tee", envOr("WAGGLE_TEE", ""), "Mirror log records to this path (use '-' for stdout)")
 	teeServicesRaw := flag.String("tee-service", envOr("WAGGLE_TEE_SERVICE", ""), "Comma-separated service.name list to tee (empty = all services)")
