@@ -58,3 +58,6 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with contents:write on danielloader/homebrew-tap, so
+          # goreleaser can commit the generated Formula to the tap repo.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
