@@ -53,6 +53,10 @@ Local OpenTelemetry viewer inspired by Honeycomb — named for the
   aggregation, each with its own Edit-chart popover (missing-values
   handling) and SI-suffixed y-axis.
 - Embedded React UI served from the same port.
+- **MCP server for agents.** A read-only [Model Context Protocol](https://modelcontextprotocol.io)
+  endpoint at `/mcp` (plus a `waggle mcp` stdio mode) exposes the same
+  query engine as tools, so Claude and other MCP clients can explore your
+  traces, metrics, and logs. See [Query from an AI agent](#query-from-an-ai-agent-mcp).
 
 ## Screenshots
 
@@ -234,6 +238,38 @@ Only log records are tee'd; spans and metrics go to SQLite as normal.
 The sink is best-effort — a write failure is logged once and the
 ingest path keeps going.
 
+### Query from an AI agent (MCP)
+
+Waggle ships a read-only [Model Context Protocol](https://modelcontextprotocol.io)
+server so an MCP client — Claude Code, Claude Desktop, or anything that
+speaks MCP — can explore your stored traces, metrics, and logs. It's the
+same query engine the UI uses (`internal/query` → SQLite) exposed as tools;
+the write paths are never bound, so an agent can read but not mutate.
+
+**Over HTTP (recommended) — talk to a running waggle.** The endpoint is
+mounted at `/mcp` on the UI listener and is on by default (`--mcp` /
+`WAGGLE_MCP`):
+
+```sh
+claude mcp add --transport http waggle http://127.0.0.1:4318/mcp
+```
+
+**Over stdio — point at a database file, no server needed.** Handy for
+poking at a `.db` after the fact:
+
+```sh
+claude mcp add waggle -- waggle mcp --db-path /path/to/waggle.db
+```
+
+Tools: `query` (the full structured query from [Query model](#query-model) —
+aggregations, filters, group-by, time buckets), `list_services`,
+`list_fields`, `list_field_values`, `list_span_names`, `list_traces`,
+`get_trace`, `search_logs`, and `recent_queries`. Time ranges accept a
+relative `{"last":"1h"}` as well as absolute bounds, and results are capped
+per-tool (a truncated result says so) to keep an agent's context bounded.
+Full tool reference on the
+[MCP Server wiki page](https://github.com/danielloader/waggle/wiki/MCP-Server).
+
 ### Query model
 
 Following Honeycomb's *Metrics 2.0* mapping, a metric datapoint is an
@@ -268,6 +304,7 @@ All flags have matching environment variables. Flags take precedence.
 | `--retention` | `WAGGLE_RETENTION` | `24h` | Drop data older than this (Go duration; `0` disables). |
 | `--log-level` | `WAGGLE_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
 | `--dev` | — | `false` | Dev mode: do not serve embedded UI, do not open browser. |
+| `--mcp` | `WAGGLE_MCP` | `true` | Serve the read-only MCP endpoint at `/mcp` on the UI listener. See [Query from an AI agent](#query-from-an-ai-agent-mcp). |
 | `--tee` | `WAGGLE_TEE` | — | Mirror incoming log records to this path (`-` = stdout). See the Tee section above. |
 | `--tee-service` | `WAGGLE_TEE_SERVICE` | — | Comma-separated `service.name` allow-list. Omit for all services. |
 | `--tee-severity` | `WAGGLE_TEE_SEVERITY` | — | Severity floor: `trace`, `debug`, `info`, `warn`, `error`, `fatal`. |
@@ -351,6 +388,7 @@ internal/
   api/          # JSON API for the UI (/api/*)
   config/       # flag + env parsing
   ingest/       # OTLP/HTTP decode + OTLP/gRPC handler + buffered writer
+  mcpserver/    # read-only MCP server (tools over the query engine)
   otlp/         # OTLP -> internal model transform
   query/        # structured query builder (validates + compiles to SQL)
   server/       # HTTP + gRPC wiring (ingest + UI/API listeners)
