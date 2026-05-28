@@ -163,12 +163,12 @@ func TestSDK_TracesRoundTrip(t *testing.T) {
 	}
 
 	waitFor(t, 3*time.Second, "service row with 3 spans", func() bool {
-		svcs, err := f.st.ListServices(f.ctx)
+		svcs, err := f.st.ListServices(f.ctx, "spans")
 		if err != nil {
 			return false
 		}
 		for _, s := range svcs {
-			if s.ServiceName == "sdk-int-test" && s.SpanCount == 3 {
+			if s.ServiceName == "sdk-int-test" && s.EventCount == 3 {
 				return true
 			}
 		}

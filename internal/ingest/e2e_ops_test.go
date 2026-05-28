@@ -116,8 +116,8 @@ func TestE2E_Retention(t *testing.T) {
 
 	var svcResp struct {
 		Services []struct {
-			Service   string `json:"service"`
-			SpanCount int64  `json:"span_count"`
+			Service    string `json:"service"`
+			EventCount int64  `json:"event_count"`
 		} `json:"services"`
 	}
 	if err := f.getJSON("/api/services", &svcResp); err != nil {
@@ -126,11 +126,11 @@ func TestE2E_Retention(t *testing.T) {
 	var svcCount int64
 	for _, s := range svcResp.Services {
 		if s.Service == "retain-svc" {
-			svcCount = s.SpanCount
+			svcCount = s.EventCount
 		}
 	}
 	if svcCount != 3 {
-		t.Errorf("retain-svc span_count after cutoff: want 3 (new), got %d", svcCount)
+		t.Errorf("retain-svc event_count after cutoff: want 3 (new), got %d", svcCount)
 	}
 }
 

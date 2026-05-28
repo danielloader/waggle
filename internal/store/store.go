@@ -53,7 +53,10 @@ type ValueFilter struct {
 type Store interface {
 	WriteBatch(ctx context.Context, b Batch) error
 
-	ListServices(ctx context.Context) ([]ServiceSummary, error)
+	// ListServices lists services that have data in the given dataset
+	// ("spans", "logs", or "metrics"); an empty/unknown dataset defaults to
+	// spans. EventCount reflects that dataset's row count per service.
+	ListServices(ctx context.Context, dataset string) ([]ServiceSummary, error)
 	ListTraces(ctx context.Context, f TraceFilter) ([]TraceSummary, string, error)
 	GetTrace(ctx context.Context, traceID string) (TraceDetail, error)
 

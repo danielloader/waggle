@@ -2,7 +2,7 @@
 
 export interface ServiceSummary {
   service: string;
-  span_count: number;
+  event_count: number;
   error_count: number;
   error_rate: number;
 }
@@ -103,8 +103,11 @@ async function getJSON<T>(url: string, signal?: AbortSignal): Promise<T> {
 }
 
 export const api = {
-  listServices: (signal?: AbortSignal) =>
-    getJSON<{ services: ServiceSummary[] }>("/api/services", signal),
+  listServices: (dataset: string, signal?: AbortSignal) =>
+    getJSON<{ services: ServiceSummary[] }>(
+      `/api/services?dataset=${encodeURIComponent(dataset)}`,
+      signal,
+    ),
 
   listTraces: (params: URLSearchParams, signal?: AbortSignal) =>
     getJSON<{ traces: TraceSummary[]; next_cursor: string }>(

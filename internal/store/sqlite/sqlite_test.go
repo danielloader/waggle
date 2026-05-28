@@ -67,11 +67,11 @@ func TestWriteAndReadSpan(t *testing.T) {
 		t.Fatalf("WriteBatch: %v", err)
 	}
 
-	services, err := s.ListServices(ctx)
+	services, err := s.ListServices(ctx, "spans")
 	if err != nil {
 		t.Fatalf("ListServices: %v", err)
 	}
-	if len(services) != 1 || services[0].ServiceName != "test" || services[0].SpanCount != 1 {
+	if len(services) != 1 || services[0].ServiceName != "test" || services[0].EventCount != 1 {
 		t.Fatalf("unexpected services: %+v", services)
 	}
 
@@ -170,4 +170,67 @@ func TestPercentileUDF(t *testing.T) {
 	if p95 < 9.0 || p95 > 10.0 {
 		t.Errorf("p95 expected ~9.5, got %v", p95)
 	}
+}
+
+// TestListServicesByDataset is the regression guard for the bug where
+// ListServices was span-only: a service that emits only logs or only metrics
+// must appear under its own dataset and not under spans.
+func TestListServicesByDataset(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	tid := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+	sid := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	end := now + 1_000_000
+	ok := int32(0)
+	var flags uint32
+
+	batch := store.Batch{
+		Resources: []store.Resource{
+			{ID: 1, ServiceName: "spanner", FirstSeenNS: now, LastSeenNS: now},
+			{ID: 2, ServiceName: "logger", FirstSeenNS: now, LastSeenNS: now},
+			{ID: 3, ServiceName: "metricer", FirstSeenNS: now, LastSeenNS: now},
+		},
+		Scopes: []store.Scope{{ID: 1, Name: "go.test", Version: "v1"}},
+		Events: []store.Event{
+			{
+				TimeNS: now, EndTimeNS: &end, ResourceID: 1, ScopeID: 1,
+				ServiceName: "spanner", Name: "op", TraceID: tid, SpanID: sid,
+				StatusCode: &ok, Flags: &flags,
+				AttributesJSON: `{"meta.signal_type":"span"}`,
+			},
+			{
+				TimeNS: now, ResourceID: 2, ScopeID: 1,
+				ServiceName: "logger", Name: "log", Body: "hello",
+				AttributesJSON: `{"meta.signal_type":"log"}`,
+			},
+		},
+		MetricEvents: []store.MetricEvent{{
+			TimeNS: now, ResourceID: 3, ScopeID: 1, ServiceName: "metricer",
+			AttributesJSON: `{"meta.signal_type":"metric","requests.total":1}`,
+		}},
+	}
+	if err := s.WriteBatch(ctx, batch); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	only := func(dataset, want string) {
+		t.Helper()
+		svcs, err := s.ListServices(ctx, dataset)
+		if err != nil {
+			t.Fatalf("ListServices(%q): %v", dataset, err)
+		}
+		if len(svcs) != 1 || svcs[0].ServiceName != want || svcs[0].EventCount != 1 {
+			t.Fatalf("ListServices(%q) = %+v, want only %q with EventCount 1", dataset, svcs, want)
+		}
+	}
+	only("spans", "spanner")
+	only("logs", "logger")
+	only("metrics", "metricer")
+	only("", "spanner") // empty defaults to spans
 }

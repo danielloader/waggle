@@ -183,12 +183,12 @@ func (f *e2eFixture) shutdownLogger(lp *sdklog.LoggerProvider) {
 func (f *e2eFixture) waitForSpanCount(svc string, n int) {
 	f.t.Helper()
 	waitFor(f.t, 3*time.Second, fmt.Sprintf("spans for %q >= %d", svc, n), func() bool {
-		services, err := f.st.ListServices(f.ctx)
+		services, err := f.st.ListServices(f.ctx, "spans")
 		if err != nil {
 			return false
 		}
 		for _, s := range services {
-			if s.ServiceName == svc && s.SpanCount >= int64(n) {
+			if s.ServiceName == svc && s.EventCount >= int64(n) {
 				return true
 			}
 		}
@@ -201,13 +201,13 @@ func (f *e2eFixture) waitForSpanCount(svc string, n int) {
 func (f *e2eFixture) waitForTotalSpanCount(n int) {
 	f.t.Helper()
 	waitFor(f.t, 3*time.Second, fmt.Sprintf("total spans >= %d", n), func() bool {
-		services, err := f.st.ListServices(f.ctx)
+		services, err := f.st.ListServices(f.ctx, "spans")
 		if err != nil {
 			return false
 		}
 		var total int64
 		for _, s := range services {
-			total += s.SpanCount
+			total += s.EventCount
 		}
 		return total >= int64(n)
 	})

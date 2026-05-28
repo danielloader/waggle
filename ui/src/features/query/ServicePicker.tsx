@@ -1,11 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { api, type ServiceSummary } from "../../lib/api";
-import type { Filter } from "../../lib/query";
+import type { Dataset, Filter } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 import { Popover } from "../../components/ui/Popover";
 
 interface Props {
+  /** Dataset to list services for — counts and membership are per-signal. */
+  dataset: Dataset;
   /** Current WHERE list — picker reads/writes the service.name = filter within. */
   where: Filter[];
   onChange: (next: Filter[]) => void;
@@ -17,10 +19,10 @@ interface Props {
  * switching between logical groupings of data. Under the hood it just
  * mutates a service.name = "<name>" equality filter in the WHERE list.
  */
-export function ServicePicker({ where, onChange }: Props) {
+export function ServicePicker({ dataset, where, onChange }: Props) {
   const services = useQuery({
-    queryKey: ["services"],
-    queryFn: ({ signal }) => api.listServices(signal),
+    queryKey: ["services", dataset],
+    queryFn: ({ signal }) => api.listServices(dataset, signal),
     staleTime: 30_000,
   });
 
@@ -99,7 +101,7 @@ export function ServicePicker({ where, onChange }: Props) {
               className="text-xs tabular-nums"
               style={{ color: "var(--color-ink-muted)" }}
             >
-              {s.span_count.toLocaleString()}
+              {s.event_count.toLocaleString()}
             </span>
           </button>
         ))}

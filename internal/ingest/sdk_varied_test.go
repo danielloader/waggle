@@ -101,20 +101,20 @@ func TestSDK_TracesVariedAttributes(t *testing.T) {
 	// --- wait for ingest to settle ------------------------------------------
 
 	waitFor(t, 5*time.Second, "50 spans across 3 services", func() bool {
-		svcs, err := f.st.ListServices(f.ctx)
+		svcs, err := f.st.ListServices(f.ctx, "spans")
 		if err != nil {
 			return false
 		}
 		byName := map[string]int64{}
 		for _, s := range svcs {
-			byName[s.ServiceName] = s.SpanCount
+			byName[s.ServiceName] = s.EventCount
 		}
 		return byName["api-gateway"] == 20 && byName["payments"] == 15 && byName["db-worker"] == 15
 	})
 
 	// --- services + error rates ---------------------------------------------
 
-	svcs, err := f.st.ListServices(f.ctx)
+	svcs, err := f.st.ListServices(f.ctx, "spans")
 	if err != nil {
 		t.Fatalf("ListServices: %v", err)
 	}

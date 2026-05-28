@@ -138,7 +138,7 @@ func (rt *Router) listHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (rt *Router) listServices(w http.ResponseWriter, r *http.Request) {
-	svcs, err := rt.store.ListServices(r.Context())
+	svcs, err := rt.store.ListServices(r.Context(), r.URL.Query().Get("dataset"))
 	if err != nil {
 		rt.writeError(w, err)
 		return

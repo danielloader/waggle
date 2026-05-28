@@ -276,12 +276,29 @@ func writeAttrValues(ctx context.Context, tx *sql.Tx, vs []store.AttrValueDelta)
 // Read paths
 // =========================================================================
 
-func (s *Store) ListServices(ctx context.Context) ([]store.ServiceSummary, error) {
-	const q = `SELECT service_name,
-		COUNT(*) AS total,
-		SUM(CASE WHEN status_code = 2 THEN 1 ELSE 0 END) AS errs
-		FROM events WHERE signal_type = 'span'
-		GROUP BY service_name ORDER BY total DESC`
+func (s *Store) ListServices(ctx context.Context, dataset string) ([]store.ServiceSummary, error) {
+	// Spans and logs live in events (keyed by signal_type); metrics live in
+	// metric_events. Errors are a span concept, so only the spans dataset
+	// computes a non-zero error count. service_name is always set from the
+	// resource, but guard against NULL so a malformed row can't surface as a
+	// blank, unselectable entry.
+	var q string
+	switch dataset {
+	case "logs":
+		q = `SELECT service_name, COUNT(*) AS total, 0 AS errs
+			FROM events WHERE signal_type = 'log' AND service_name IS NOT NULL
+			GROUP BY service_name ORDER BY total DESC`
+	case "metrics":
+		q = `SELECT service_name, COUNT(*) AS total, 0 AS errs
+			FROM metric_events WHERE service_name IS NOT NULL
+			GROUP BY service_name ORDER BY total DESC`
+	default: // spans
+		q = `SELECT service_name,
+			COUNT(*) AS total,
+			SUM(CASE WHEN status_code = 2 THEN 1 ELSE 0 END) AS errs
+			FROM events WHERE signal_type = 'span' AND service_name IS NOT NULL
+			GROUP BY service_name ORDER BY total DESC`
+	}
 	rows, err := s.reader.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
@@ -290,11 +307,11 @@ func (s *Store) ListServices(ctx context.Context) ([]store.ServiceSummary, error
 	var out []store.ServiceSummary
 	for rows.Next() {
 		var r store.ServiceSummary
-		if err := rows.Scan(&r.ServiceName, &r.SpanCount, &r.ErrorCount); err != nil {
+		if err := rows.Scan(&r.ServiceName, &r.EventCount, &r.ErrorCount); err != nil {
 			return nil, err
 		}
-		if r.SpanCount > 0 {
-			r.ErrorRate = float64(r.ErrorCount) / float64(r.SpanCount)
+		if r.EventCount > 0 {
+			r.ErrorRate = float64(r.ErrorCount) / float64(r.EventCount)
 		}
 		out = append(out, r)
 	}
