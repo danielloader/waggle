@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type FieldInfo } from "../../lib/api";
-import type { Dataset, Filter } from "../../lib/query";
+import { BOOLEAN_META_FIELDS, type Dataset, type Filter } from "../../lib/query";
 import {
   applySuggestion,
   FILTER_OP_DISPLAY,
@@ -123,6 +123,20 @@ export function FilterInput({
   };
 
   const takeSuggestion = (s: Suggestion) => {
+    // A boolean field (is_root, error, or any bool-typed attribute) is a
+    // complete search on its own — selecting it commits "= true" straight
+    // away rather than dropping into the operator phase and making the user
+    // type "= true".
+    if (
+      parsed.phase === "field" &&
+      (s.hint === "bool" || BOOLEAN_META_FIELDS.has(s.value))
+    ) {
+      onSubmit({ field: s.value, op: "=", value: true });
+      setText("");
+      setSelected(0);
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return;
+    }
     const next = applySuggestion(text, parsed, s.value);
     setText(next);
     setSelected(0);
@@ -151,13 +165,29 @@ export function FilterInput({
             takeSuggestion(suggestions[selected]);
           } else if (e.key === "Enter") {
             e.preventDefault();
-            // Enter commits when the text parses to a valid filter; otherwise
-            // accept the highlighted suggestion to keep the flow going.
-            const f = textToFilter(text);
-            if (f) {
-              commit();
-            } else if (suggestions.length > 0) {
-              takeSuggestion(suggestions[selected]);
+            const active =
+              suggestions.length > 0 ? suggestions[selected] : undefined;
+            // Mid-typing a field or value: accept the highlighted suggestion
+            // rather than committing the partial token. textToFilter treats a
+            // partial value like "db4" (or a partial field name) as a complete
+            // filter, so without this Enter would submit the half-typed token
+            // instead of the suggestion the dropdown is showing. takeSuggestion
+            // completes the token (or, for a boolean field, commits it). The
+            // operator phase is left out: there the partial is empty and the
+            // bare-field "exists"/"= true" commit must still win.
+            if (
+              (parsed.phase === "value" || parsed.phase === "field") &&
+              active &&
+              active.value !== parsed.partial
+            ) {
+              takeSuggestion(active);
+            } else {
+              const f = textToFilter(text);
+              if (f) {
+                commit();
+              } else if (suggestions.length > 0) {
+                takeSuggestion(suggestions[selected]);
+              }
             }
           } else if (e.key === "Escape") {
             e.preventDefault();
