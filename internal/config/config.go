@@ -20,6 +20,10 @@ type Config struct {
 	LogLevel      string
 	Dev           bool
 
+	// Version, when set via --version, makes main print the build version
+	// and exit before starting any listeners.
+	Version bool
+
 	// MCPEnabled mounts the read-only Model Context Protocol endpoint at
 	// /mcp on the UI listener, letting an MCP client (e.g. Claude) explore
 	// stored traces/metrics/logs. Defaults on; the surface is read-only and
@@ -50,6 +54,7 @@ func Load() (*Config, error) {
 	retentionStr := flag.String("retention", envOr("WAGGLE_RETENTION", "24h"), "Drop data older than this")
 	flag.StringVar(&c.LogLevel, "log-level", envOr("WAGGLE_LOG_LEVEL", "info"), "slog level: debug, info, warn, error")
 	flag.BoolVar(&c.Dev, "dev", false, "Dev mode: do not serve embedded UI and do not open browser")
+	flag.BoolVar(&c.Version, "version", false, "Print version and exit")
 	flag.BoolVar(&c.MCPEnabled, "mcp", envBool("WAGGLE_MCP", true), "Serve the read-only MCP endpoint at /mcp on the UI listener")
 
 	flag.StringVar(&c.TeePath, "tee", envOr("WAGGLE_TEE", ""), "Mirror log records to this path (use '-' for stdout)")

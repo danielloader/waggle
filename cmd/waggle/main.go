@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,6 +22,10 @@ import (
 	"github.com/danielloader/waggle/internal/store/sqlite"
 )
 
+// version is the build version, overridden at release time via
+// -ldflags "-X main.version=...". Defaults to "dev" for local builds.
+var version = "dev"
+
 func main() {
 	// `waggle mcp` runs the read-only MCP server over stdio against a database
 	// file, for clients (e.g. Claude) that spawn the process directly. It must
@@ -37,6 +42,11 @@ func main() {
 	if err != nil {
 		slog.Error("invalid config", "err", err)
 		os.Exit(2)
+	}
+
+	if cfg.Version {
+		fmt.Println(version)
+		return
 	}
 
 	log := newLogger(cfg.LogLevel)
