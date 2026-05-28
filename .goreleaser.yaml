@@ -150,6 +150,14 @@ release:
     ./waggle
     ```
 
+    **Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` (amd64 + arm64) are in the assets below; they install to `/usr/bin/waggle` (unsigned):
+    ```
+    sudo dpkg -i waggle_{{ .Version }}_amd64.deb                     # Debian/Ubuntu
+    sudo rpm -i waggle-{{ .Version }}-1.x86_64.rpm                   # Fedora/RHEL/openSUSE
+    sudo apk add --allow-untrusted waggle_{{ .Version }}_x86_64.apk  # Alpine
+    sudo pacman -U waggle-{{ .Version }}-1-x86_64.pkg.tar.zst        # Arch
+    ```
+
     **Docker**
     ```
     docker run --rm -p 4318:4318 -p 4317:4317 -v $(pwd)/data:/data ghcr.io/danielloader/waggle:{{ .Version }}
