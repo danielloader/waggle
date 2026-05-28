@@ -78,6 +78,36 @@ nfpms:
       - src: LICENSE
         dst: /usr/share/doc/waggle/LICENSE
 
+# Homebrew Cask (macOS). goreleaser deprecated `brews` (formulas) for
+# prebuilt binaries in favour of casks; casks are macOS-only, which is fine
+# here — Linux users have the nfpm packages above. Users install with
+# `brew install danielloader/tap/waggle`.
+homebrew_casks:
+  - name: waggle
+    # Tap lives in a separate repo, so the default GITHUB_TOKEN (scoped to
+    # this repo) can't push to it — HOMEBREW_TAP_TOKEN is a PAT with
+    # contents:write on danielloader/homebrew-tap, passed in release.yml.
+    repository:
+      owner: danielloader
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://github.com/danielloader/waggle
+    description: Local OpenTelemetry viewer — OTLP/HTTP + OTLP/gRPC ingest into SQLite + Honeycomb-style UI
+    # Skip publishing for prereleases (e.g. v1.2.3-rc1).
+    skip_upload: auto
+    # homepage and download host are the same domain; helps `brew audit`.
+    url:
+      verified: github.com/danielloader/waggle
+    # The binary is unsigned, so strip the Gatekeeper quarantine xattr on
+    # install — otherwise macOS blocks it with "developer cannot be verified".
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/waggle"]
+          end
+
 kos:
   - id: waggle-docker
     build: waggle
@@ -144,6 +174,11 @@ release:
     Local OpenTelemetry viewer — OTLP/HTTP (4318) and OTLP/gRPC (4317) ingest into SQLite + Honeycomb-style UI.
   footer: |
     ### Install
+
+    **Homebrew** (macOS)
+    ```
+    brew install --cask danielloader/tap/waggle
+    ```
 
     **Binary** — download from the assets below, extract, and run:
     ```

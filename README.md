@@ -123,6 +123,12 @@ declines within that view.
 
 ## Install
 
+**Homebrew** — macOS, via the tap (Linux: use the packages below):
+
+```sh
+brew install --cask danielloader/tap/waggle
+```
+
 **Binary** — grab a release archive from
 [Releases](https://github.com/danielloader/waggle/releases), extract, and run:
 
