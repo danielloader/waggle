@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { X } from "lucide-react";
-import type { Dataset, Filter } from "../../lib/query";
+import { BOOLEAN_META_FIELDS, type Dataset, type Filter } from "../../lib/query";
 import { filterToText } from "../../lib/filterText";
 import { FilterInput } from "./FilterInput";
 
@@ -56,9 +56,16 @@ export function FilterChip({ filter, dataset = "spans", service, onChange, onRem
         title="Click to edit"
       >
         <span>{filter.field}</span>
-        <span style={{ color: "var(--color-ink-muted)" }}>{filter.op}</span>
-        {!OPS_WITHOUT_VALUE.has(filter.op) && (
-          <span className="truncate max-w-xs">{formatValue(filter.value)}</span>
+        {/* A boolean meta field committed as "= true" is shown bare — the
+            "= true" is implied by its presence, matching how filterToText
+            serializes it. "= false" and other ops still render in full. */}
+        {!isBareBool(filter) && (
+          <>
+            <span style={{ color: "var(--color-ink-muted)" }}>{filter.op}</span>
+            {!OPS_WITHOUT_VALUE.has(filter.op) && (
+              <span className="truncate max-w-xs">{formatValue(filter.value)}</span>
+            )}
+          </>
         )}
       </button>
 
@@ -72,6 +79,10 @@ export function FilterChip({ filter, dataset = "spans", service, onChange, onRem
       </button>
     </div>
   );
+}
+
+function isBareBool(f: Filter): boolean {
+  return f.op === "=" && f.value === true && BOOLEAN_META_FIELDS.has(f.field);
 }
 
 function formatValue(v: Filter["value"]): string {
