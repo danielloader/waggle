@@ -53,7 +53,7 @@ type timeRange struct {
 func registerTools(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_services",
-		Description: "List services that have reported spans, with span and error counts. Use this first to discover what is being observed.",
+		Description: "List services that have data in a dataset (default spans), with row and error counts. Pass dataset=logs or dataset=metrics to discover services that only emit those signals. Use this first to discover what is being observed.",
 	}, t.listServices)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -103,12 +103,16 @@ func registerTools(s *mcp.Server, t *tools) {
 
 // ---- list_services ----------------------------------------------------------
 
+type servicesInput struct {
+	Dataset string `json:"dataset,omitempty" jsonschema:"one of spans, logs, metrics (default spans)"`
+}
+
 type servicesOutput struct {
 	Services []store.ServiceSummary `json:"services"`
 }
 
-func (t *tools) listServices(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, servicesOutput, error) {
-	svcs, err := t.store.ListServices(ctx)
+func (t *tools) listServices(ctx context.Context, _ *mcp.CallToolRequest, in servicesInput) (*mcp.CallToolResult, servicesOutput, error) {
+	svcs, err := t.store.ListServices(ctx, in.Dataset)
 	if err != nil {
 		return nil, servicesOutput{}, fmt.Errorf("list services: %w", err)
 	}

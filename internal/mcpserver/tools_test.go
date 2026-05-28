@@ -222,7 +222,7 @@ func TestQueryToolInvalidDataset(t *testing.T) {
 
 func TestListServicesTool(t *testing.T) {
 	tl := newSeededTools(t)
-	_, out, err := tl.listServices(context.Background(), nil, struct{}{})
+	_, out, err := tl.listServices(context.Background(), nil, servicesInput{})
 	if err != nil {
 		t.Fatalf("listServices: %v", err)
 	}

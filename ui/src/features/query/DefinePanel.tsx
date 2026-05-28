@@ -71,6 +71,7 @@ export function DefinePanel({ dataset, search, onChange, onDatasetChange, onRun,
           />
           <span style={{ color: "var(--color-ink-muted)" }}>·</span>
           <ServicePicker
+            dataset={dataset}
             where={search.where}
             onChange={(where) => onChange({ ...search, where })}
           />

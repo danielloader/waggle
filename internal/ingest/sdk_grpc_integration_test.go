@@ -147,12 +147,12 @@ func TestSDK_GRPC_TracesRoundTrip(t *testing.T) {
 	}
 
 	waitFor(t, 3*time.Second, "service row with 2 spans", func() bool {
-		svcs, err := f.st.ListServices(f.ctx)
+		svcs, err := f.st.ListServices(f.ctx, "spans")
 		if err != nil {
 			return false
 		}
 		for _, s := range svcs {
-			if s.ServiceName == "sdk-grpc-trace-test" && s.SpanCount == 2 {
+			if s.ServiceName == "sdk-grpc-trace-test" && s.EventCount == 2 {
 				return true
 			}
 		}

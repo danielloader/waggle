@@ -474,11 +474,11 @@ func TestE2E_CrossServiceTrace(t *testing.T) {
 		t.Errorf("payments span missing / wrong: %v", got)
 	}
 
-	// Service list must show both with span_count = 1 each.
+	// Service list must show both with event_count = 1 each.
 	var svcResp struct {
 		Services []struct {
-			Service   string `json:"service"`
-			SpanCount int64  `json:"span_count"`
+			Service    string `json:"service"`
+			EventCount int64  `json:"event_count"`
 		} `json:"services"`
 	}
 	if err := f.getJSON("/api/services", &svcResp); err != nil {
@@ -486,7 +486,7 @@ func TestE2E_CrossServiceTrace(t *testing.T) {
 	}
 	per := map[string]int64{}
 	for _, s := range svcResp.Services {
-		per[s.Service] = s.SpanCount
+		per[s.Service] = s.EventCount
 	}
 	if per["gateway"] != 1 || per["payments"] != 1 {
 		t.Errorf("service counts want gateway=1 payments=1, got %v", per)

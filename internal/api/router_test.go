@@ -215,8 +215,8 @@ func TestAPI_Services(t *testing.T) {
 	if populated.Services[0].ServiceName != "widget" {
 		t.Errorf("service name: %q", populated.Services[0].ServiceName)
 	}
-	if populated.Services[0].SpanCount != 2 {
-		t.Errorf("span count: %d", populated.Services[0].SpanCount)
+	if populated.Services[0].EventCount != 2 {
+		t.Errorf("event count: %d", populated.Services[0].EventCount)
 	}
 	if populated.Services[0].ErrorCount != 1 {
 		t.Errorf("error count: %d", populated.Services[0].ErrorCount)

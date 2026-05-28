@@ -147,10 +147,13 @@ type Batch struct {
 	MetaOverwrites int64
 }
 
-// ServiceSummary is a row for the service/dataset selector.
+// ServiceSummary is a row for the service/dataset selector. EventCount is the
+// number of rows the service has in the queried dataset (spans, logs, or
+// metric events); ErrorCount/ErrorRate are span-only and stay zero for the
+// log and metric datasets.
 type ServiceSummary struct {
 	ServiceName string  `json:"service"`
-	SpanCount   int64   `json:"span_count"`
+	EventCount  int64   `json:"event_count"`
 	ErrorCount  int64   `json:"error_count"`
 	ErrorRate   float64 `json:"error_rate"`
 }
