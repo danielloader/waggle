@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   History,
   PanelLeftClose,
   PanelLeft,
+  Trash2,
 } from "lucide-react";
 import clsx from "clsx";
+
+import { api } from "../lib/api";
 
 const STORAGE_KEY = "waggle.sidebar.collapsed";
 
@@ -26,6 +29,23 @@ export function RootLayout() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
+
+  const queryClient = useQueryClient();
+  const clearData = useMutation({
+    mutationFn: () => api.clear(),
+    onSuccess: () => queryClient.invalidateQueries(),
+  });
+
+  const onClear = () => {
+    if (clearData.isPending) return;
+    if (
+      window.confirm(
+        "Clear all ingested telemetry? This permanently deletes every event, metric, trace, and field. This cannot be undone.",
+      )
+    ) {
+      clearData.mutate();
+    }
+  };
 
   // Health probe — reads back the server's real listen address so the
   // footer doesn't lie when waggle runs on a non-default --addr.
@@ -121,6 +141,23 @@ export function RootLayout() {
             <History />,
             pathname.startsWith("/history"),
           )}
+          <button
+            type="button"
+            onClick={onClear}
+            disabled={clearData.isPending}
+            className={clsx(
+              "mt-auto flex items-center rounded-md text-sm text-[var(--color-error)] hover:bg-[var(--color-error)]/10 disabled:opacity-50",
+              collapsed ? "justify-center p-2" : "gap-2 px-3 py-2",
+            )}
+            title={collapsed ? "Clear data" : undefined}
+          >
+            <span className="w-4 h-4 flex items-center justify-center">
+              <Trash2 className="w-4 h-4" />
+            </span>
+            {!collapsed && (
+              <span>{clearData.isPending ? "Clearing…" : "Clear data"}</span>
+            )}
+          </button>
         </nav>
         <div
           className={clsx(

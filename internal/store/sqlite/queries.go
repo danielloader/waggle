@@ -1195,6 +1195,22 @@ func (s *Store) Retain(ctx context.Context, olderThanNS int64) error {
 		olderThanNS); err != nil {
 		return err
 	}
+	// Scopes have no timestamp of their own; drop any no longer referenced by a
+	// surviving event or metric. The IS NOT NULL guards keep the NOT IN from
+	// short-circuiting to "match nothing" on the nullable scope_id columns.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scopes
+		WHERE scope_id NOT IN (SELECT scope_id FROM events WHERE scope_id IS NOT NULL)
+		  AND scope_id NOT IN (SELECT scope_id FROM metric_events WHERE scope_id IS NOT NULL)`); err != nil {
+		return err
+	}
+	// Attribute catalog rollups carry their own last_seen_ns, so they age out on
+	// the same cutoff as the events that fed them.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attribute_keys WHERE last_seen_ns < ?`, olderThanNS); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attribute_values WHERE last_seen_ns < ?`, olderThanNS); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

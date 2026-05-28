@@ -224,3 +224,94 @@ func TestRetain_OldResourceWithRecentEvent(t *testing.T) {
 		t.Fatalf("expected 1 resource (still referenced by the recent event), got %d", n)
 	}
 }
+
+// Attribute catalog rollups carry their own last_seen_ns and must age out on
+// the same cutoff as events — otherwise the Fields panel keeps surfacing keys
+// and values from data that was culled long ago.
+func TestRetain_PrunesAttributeCatalog(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "retain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	old := now - int64(2*time.Hour)
+	recent := now - int64(5*time.Minute)
+
+	if _, err := s.WriterDB().ExecContext(ctx, `INSERT INTO attribute_keys
+		(signal_type, service_name, key, value_type, first_seen_ns, last_seen_ns, count)
+		VALUES ('span','svc','old.key','str',?,?,1), ('span','svc','new.key','str',?,?,1)`,
+		old, old, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.WriterDB().ExecContext(ctx, `INSERT INTO attribute_values
+		(signal_type, service_name, key, value, count, last_seen_ns)
+		VALUES ('span','svc','k','old',1,?), ('span','svc','k','new',1,?)`,
+		old, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff := now - int64(time.Hour)
+	if err := s.Retain(ctx, cutoff); err != nil {
+		t.Fatalf("Retain: %v", err)
+	}
+
+	var keys, vals int
+	if err := s.ReaderDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM attribute_keys").Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 1 {
+		t.Fatalf("expected 1 attribute_key (new.key), got %d", keys)
+	}
+	if err := s.ReaderDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM attribute_values").Scan(&vals); err != nil {
+		t.Fatal(err)
+	}
+	if vals != 1 {
+		t.Fatalf("expected 1 attribute_value (new), got %d", vals)
+	}
+}
+
+// A scope referenced only by culled events becomes an orphan and should be
+// dropped; a scope still referenced by a surviving event must be kept.
+func TestRetain_DeletesOrphanedScope_KeepsReferenced(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "retain.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	old := now - int64(2*time.Hour)
+	recent := now - int64(5*time.Minute)
+
+	// Old batch: resource 1, scope 10 (becomes orphaned once its event is culled).
+	if err := s.WriteBatch(ctx, mkBatch(1, 10, 0xAA, old)); err != nil {
+		t.Fatal(err)
+	}
+	// Recent batch: resource 2, scope 20 (stays referenced).
+	if err := s.WriteBatch(ctx, mkBatch(2, 20, 0xBB, recent)); err != nil {
+		t.Fatal(err)
+	}
+
+	cutoff := now - int64(time.Hour)
+	if err := s.Retain(ctx, cutoff); err != nil {
+		t.Fatalf("Retain: %v", err)
+	}
+
+	var n int
+	if err := s.ReaderDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM scopes WHERE scope_id = 10").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected orphaned scope 10 deleted, got %d", n)
+	}
+	if err := s.ReaderDB().QueryRowContext(ctx, "SELECT COUNT(*) FROM scopes WHERE scope_id = 20").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected referenced scope 20 kept, got %d", n)
+	}
+}
