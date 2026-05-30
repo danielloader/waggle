@@ -295,6 +295,33 @@ per-tool (a truncated result says so) to keep an agent's context bounded.
 Full tool reference on the
 [MCP Server wiki page](https://github.com/danielloader/waggle/wiki/MCP-Server).
 
+### Run as a background service
+
+`waggle service-install` writes a per-user systemd unit (Linux) or LaunchAgent
+plist (macOS) for the currently-running binary, then enables and starts it.
+`--no-open-browser` is added automatically. Anything after `--` is passed
+verbatim to waggle:
+
+```sh
+waggle service-install -- --addr 0.0.0.0:4318 --retention 72h
+```
+
+- **Linux:** writes `~/.config/systemd/user/waggle.service` and runs
+  `systemctl --user enable --now waggle.service`. To keep the service running
+  across reboots without an active login, run `sudo loginctl enable-linger $USER`.
+- **macOS:** writes `~/Library/LaunchAgents/com.github.danielloader.waggle.plist`
+  and runs `launchctl bootstrap gui/$UID …`. Logs go to
+  `~/Library/Logs/waggle/waggle.log`.
+
+Pass `--no-start` to write the unit/plist without enabling it (useful for
+inspecting or hand-tweaking it first). `waggle service-uninstall` is
+idempotent — it stops the service if loaded, removes the unit/plist, and
+exits cleanly even if nothing is installed.
+
+System-wide services (root-owned units in `/etc/systemd/system` or
+`/Library/LaunchDaemons`) are out of scope for this subcommand — install the
+binary via `dpkg`/`rpm`/`brew` and write your own unit if you need that.
+
 ### Query model
 
 Following Honeycomb's *Metrics 2.0* mapping, a metric datapoint is an
