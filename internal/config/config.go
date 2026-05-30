@@ -4,9 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/adrg/xdg"
 )
 
 type Config struct {
@@ -45,7 +48,7 @@ type Config struct {
 func Load() (*Config, error) {
 	c := &Config{}
 
-	flag.StringVar(&c.DBPath, "db-path", envOr("WAGGLE_DB", "./waggle.db"), "SQLite file path")
+	flag.StringVar(&c.DBPath, "db-path", envOr("WAGGLE_DB", DefaultDBPath()), "SQLite file path (defaults to the OS user-data dir)")
 	flag.StringVar(&c.Addr, "addr", envOr("WAGGLE_ADDR", "127.0.0.1:4318"), "Bind address for UI, API, and OTLP ingest")
 	flag.StringVar(&c.IngestAddr, "ingest-addr", envOr("WAGGLE_INGEST_ADDR", ""), "Override address for OTLP ingest (default: same as --addr)")
 	flag.StringVar(&c.UIAddr, "ui-addr", envOr("WAGGLE_UI_ADDR", ""), "Override address for UI + API (default: same as --addr)")
@@ -127,6 +130,18 @@ func parseTeeSeverity(s string) (int32, error) {
 
 func (c *Config) SplitListeners() bool {
 	return c.IngestAddr != c.UIAddr
+}
+
+// DefaultDBPath returns the OS-specific path where waggle stores its SQLite
+// database when neither --db-path nor WAGGLE_DB is set. Resolution is handled
+// by github.com/adrg/xdg, which maps XDG_DATA_HOME to ~/Library/Application
+// Support on macOS and %LOCALAPPDATA% on Windows. Falls back to ./waggle.db
+// if the user-data dir cannot be resolved.
+func DefaultDBPath() string {
+	if xdg.DataHome == "" {
+		return "./waggle.db"
+	}
+	return filepath.Join(xdg.DataHome, "waggle", "waggle.db")
 }
 
 func envOr(k, def string) string {

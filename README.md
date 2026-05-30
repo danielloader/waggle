@@ -320,7 +320,7 @@ All flags have matching environment variables. Flags take precedence.
 
 | Flag | Env | Default | Notes |
 | --- | --- | --- | --- |
-| `--db-path` | `WAGGLE_DB` | `./waggle.db` | SQLite file path. |
+| `--db-path` | `WAGGLE_DB` | OS user-data dir | SQLite file path. Defaults to `$XDG_DATA_HOME/waggle/waggle.db` (Linux, falling back to `~/.local/share/waggle/waggle.db`), `~/Library/Application Support/waggle/waggle.db` (macOS), or `%LocalAppData%\waggle\waggle.db` (Windows). Parent directories are created on first run. |
 | `--addr` | `WAGGLE_ADDR` | `127.0.0.1:4318` | Bind address for UI, API, and OTLP/HTTP ingest. |
 | `--ingest-addr` | `WAGGLE_INGEST_ADDR` | — | Override to split OTLP/HTTP ingest onto its own listener. |
 | `--ui-addr` | `WAGGLE_UI_ADDR` | — | Override to split the UI + API onto its own listener. |
