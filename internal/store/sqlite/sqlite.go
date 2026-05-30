@@ -7,6 +7,8 @@ import (
 	_ "embed"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -35,9 +37,17 @@ type Store struct {
 }
 
 // Open opens (or creates) the SQLite file at path and applies the schema.
+// Missing parent directories are created so the OS-specific default location
+// (and any user-supplied nested path) just works on first run.
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := registerFunctions(); err != nil {
 		return nil, err
+	}
+
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db dir %q: %w", dir, err)
+		}
 	}
 
 	writer, err := openPool(path, 1)

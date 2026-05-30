@@ -132,7 +132,7 @@ func main() {
 // file. Logs go to stderr so stdout stays clean for the MCP protocol.
 func runMCPStdio(args []string) error {
 	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
-	dbPath := fs.String("db-path", envOr("WAGGLE_DB", "./waggle.db"), "SQLite file path")
+	dbPath := fs.String("db-path", envOr("WAGGLE_DB", config.DefaultDBPath()), "SQLite file path (defaults to the OS user-data dir)")
 	logLevel := fs.String("log-level", envOr("WAGGLE_LOG_LEVEL", "info"), "slog level: debug, info, warn, error")
 	if err := fs.Parse(args); err != nil {
 		return err
