@@ -1,0 +1,32 @@
+[Unit]
+Description=waggle — local OpenTelemetry viewer
+Documentation=https://github.com/danielloader/waggle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=waggle
+Group=waggle
+ExecStart=/usr/bin/waggle --no-open-browser --addr 127.0.0.1:4318 --grpc-addr 127.0.0.1:4317 --db-path /var/lib/waggle/waggle.db
+Restart=on-failure
+RestartSec=5
+# State lives under /var/lib/waggle; nothing else on disk needs writing.
+StateDirectory=waggle
+StateDirectoryMode=0750
+# Sandboxing: waggle is a local viewer with no need for the rest of the
+# filesystem or the network namespace privileges.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

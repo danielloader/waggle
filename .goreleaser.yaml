@@ -78,12 +78,30 @@ nfpms:
         dst: /usr/share/doc/waggle/README.md
       - src: LICENSE
         dst: /usr/share/doc/waggle/LICENSE
+      # systemd unit shipped at the canonical vendor location.
+      # /lib/systemd/system/ works for both Debian and Fedora-derived
+      # distros (systemd treats /lib and /usr/lib as equivalent for
+      # vendor units).
+      - src: packaging/systemd/waggle.service
+        dst: /lib/systemd/system/waggle.service
+        file_info:
+          mode: 0644
+    # Maintainer scripts: create the `waggle` system user in preinstall,
+    # enable+start (or restart after upgrade) in postinstall, stop+disable
+    # in preremove, daemon-reload in postremove. They no-op on systems
+    # without systemd.
+    scripts:
+      preinstall: packaging/scripts/preinstall.sh
+      postinstall: packaging/scripts/postinstall.sh
+      preremove: packaging/scripts/preremove.sh
+      postremove: packaging/scripts/postremove.sh
 
-# Homebrew Cask (macOS). goreleaser deprecated `brews` (formulas) for
-# prebuilt binaries in favour of casks; casks are macOS-only, which is fine
-# here — Linux users have the nfpm packages above. Users install with
-# `brew install danielloader/tap/waggle`.
-homebrew_casks:
+# Homebrew formula (macOS + Linuxbrew). `brews` is deprecated in goreleaser
+# v2.10+ in favour of `homebrew_casks`, but only formulas integrate with
+# `brew services` — which is the whole reason we ship a tap. We accept the
+# deprecation warning; the block still works in v2.x and Homebrew has no
+# plans to remove formula support.
+brews:
   - name: waggle
     # Tap lives in a separate repo, so the default GITHUB_TOKEN (scoped to
     # this repo) can't push to it — HOMEBREW_TAP_TOKEN is a PAT with
@@ -93,21 +111,33 @@ homebrew_casks:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    # Write to Formula/ in the tap (Homebrew's convention).
+    directory: Formula
     homepage: https://github.com/danielloader/waggle
     description: Local OpenTelemetry viewer — OTLP/HTTP + OTLP/gRPC ingest into SQLite + Honeycomb-style UI
+    license: GPL-3.0-only
     # Skip publishing for prereleases (e.g. v1.2.3-rc1).
     skip_upload: auto
-    # homepage and download host are the same domain; helps `brew audit`.
-    url:
-      verified: github.com/danielloader/waggle
-    # The binary is unsigned, so strip the Gatekeeper quarantine xattr on
-    # install — otherwise macOS blocks it with "developer cannot be verified".
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/waggle"]
-          end
+    install: |
+      bin.install "waggle"
+    # `brew services start waggle` → launchd LaunchAgent on macOS, systemd
+    # user unit on Linuxbrew. KeepAlive restarts on crash; logs go under
+    # the brew prefix's var/log so they're easy to find with
+    # `brew --prefix`/var/log/waggle.log.
+    service: |
+      run [opt_bin/"waggle", "--no-open-browser"]
+      keep_alive true
+      log_path var/"log/waggle.log"
+      error_log_path var/"log/waggle.log"
+    caveats: |
+      Run waggle in the foreground:
+        waggle
+      Or run it as a background service (LaunchAgent on macOS):
+        brew services start waggle
+      Logs (when running as a service):
+        #{var}/log/waggle.log
+    test: |
+      assert_match "waggle", shell_output("#{bin}/waggle --version")
 
 kos:
   - id: waggle-docker
@@ -176,9 +206,10 @@ release:
   footer: |
     ### Install
 
-    **Homebrew** (macOS)
+    **Homebrew** (macOS, Linuxbrew)
     ```
-    brew install --cask danielloader/tap/waggle
+    brew install danielloader/tap/waggle      # foreground
+    brew services start waggle                # or run as a LaunchAgent (logs: $(brew --prefix)/var/log/waggle.log)
     ```
 
     **Binary** — download from the assets below, extract, and run:
@@ -186,12 +217,13 @@ release:
     ./waggle
     ```
 
-    **Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` (amd64 + arm64) are in the assets below; they install to `/usr/bin/waggle` (unsigned):
+    **Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` (amd64 + arm64) are in the assets below; they install to `/usr/bin/waggle`, ship a systemd unit, and auto-start the service on install (unsigned):
     ```
     sudo dpkg -i waggle_{{ .Version }}_amd64.deb                     # Debian/Ubuntu
     sudo rpm -i waggle-{{ .Version }}-1.x86_64.rpm                   # Fedora/RHEL/openSUSE
     sudo apk add --allow-untrusted waggle_{{ .Version }}_x86_64.apk  # Alpine
     sudo pacman -U waggle-{{ .Version }}-1-x86_64.pkg.tar.zst        # Arch
+    systemctl status waggle                                          # check it's up
     ```
 
     **Docker**
