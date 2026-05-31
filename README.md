@@ -123,10 +123,11 @@ declines within that view.
 
 ## Install
 
-**Homebrew** — macOS, via the tap (Linux: use the packages below):
+**Homebrew** — macOS or Linuxbrew, via the tap:
 
 ```sh
-brew install --cask danielloader/tap/waggle
+brew install danielloader/tap/waggle
+brew services start waggle   # optional: run as a LaunchAgent
 ```
 
 **Binary** — grab a release archive from
@@ -138,8 +139,11 @@ brew install --cask danielloader/tap/waggle
 
 **Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` are
 attached to each [release](https://github.com/danielloader/waggle/releases)
-(amd64 + arm64). They install the binary to `/usr/bin/waggle`. Packages are
-**unsigned**, so some installers want an explicit "allow untrusted" flag:
+(amd64 + arm64). They install the binary to `/usr/bin/waggle`, drop a
+systemd unit at `/lib/systemd/system/waggle.service`, create a `waggle`
+system user, and start the service on install. State lives under
+`/var/lib/waggle/`. Packages are **unsigned**, so some installers want an
+explicit "allow untrusted" flag:
 
 ```sh
 # Debian / Ubuntu
@@ -153,6 +157,8 @@ sudo apk add --allow-untrusted waggle_*_x86_64.apk
 
 # Arch
 sudo pacman -U waggle-*-x86_64.pkg.tar.zst
+
+systemctl status waggle                # confirm the service started
 ```
 
 **Docker** — images are published to GitHub Container Registry:
@@ -297,30 +303,21 @@ Full tool reference on the
 
 ### Run as a background service
 
-`waggle service-install` writes a per-user systemd unit (Linux) or LaunchAgent
-plist (macOS) for the currently-running binary, then enables and starts it.
-`--no-open-browser` is added automatically. Anything after `--` is passed
-verbatim to waggle:
+Waggle is service-aware when installed via a package manager — the
+single-binary download is meant to be run in the foreground.
 
-```sh
-waggle service-install -- --addr 0.0.0.0:4318 --retention 72h
-```
+- **macOS (Homebrew formula):** `brew services start waggle` runs waggle as a
+  LaunchAgent. Logs go to `$(brew --prefix)/var/log/waggle.log`. Stop with
+  `brew services stop waggle`; restart after upgrade with `brew services restart waggle`.
+- **Linux (`.deb` / `.rpm` / `.apk` / Arch):** the package ships
+  `/lib/systemd/system/waggle.service` and creates a `waggle` system user.
+  The postinstall enables and starts the service on first install, and
+  restarts it after an upgrade. Manage it with the usual
+  `systemctl status|restart|stop waggle`. State lives at `/var/lib/waggle/`.
 
-- **Linux:** writes `~/.config/systemd/user/waggle.service` and runs
-  `systemctl --user enable --now waggle.service`. To keep the service running
-  across reboots without an active login, run `sudo loginctl enable-linger $USER`.
-- **macOS:** writes `~/Library/LaunchAgents/com.github.danielloader.waggle.plist`
-  and runs `launchctl bootstrap gui/$UID …`. Logs go to
-  `~/Library/Logs/waggle/waggle.log`.
-
-Pass `--no-start` to write the unit/plist without enabling it (useful for
-inspecting or hand-tweaking it first). `waggle service-uninstall` is
-idempotent — it stops the service if loaded, removes the unit/plist, and
-exits cleanly even if nothing is installed.
-
-System-wide services (root-owned units in `/etc/systemd/system` or
-`/Library/LaunchDaemons`) are out of scope for this subcommand — install the
-binary via `dpkg`/`rpm`/`brew` and write your own unit if you need that.
+The standalone binary, Docker image, and the snap-shot of waggle you build
+yourself have no service integration — start them however you'd start any
+other foreground process.
 
 ### Query model
 

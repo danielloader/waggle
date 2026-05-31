@@ -3,6 +3,7 @@ module github.com/danielloader/waggle
 go 1.26.2
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	go.opentelemetry.io/otel v1.43.0
@@ -43,7 +44,6 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.55.0 // indirect
 	github.com/Ladicle/tabwriter v1.0.0 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/adrg/xdg v0.5.3 // indirect
 	github.com/alecthomas/chroma/v2 v2.23.1 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.5 // indirect

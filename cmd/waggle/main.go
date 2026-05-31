@@ -27,29 +27,15 @@ import (
 var version = "dev"
 
 func main() {
-	// Subcommands are dispatched before config.Load parses the global flag set,
-	// so each one owns its own flag.FlagSet.
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "mcp":
-			if err := runMCPStdio(os.Args[2:]); err != nil {
-				slog.Error("mcp stdio exited", "err", err)
-				os.Exit(1)
-			}
-			return
-		case "service-install":
-			if err := runServiceInstall(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "service-install:", err)
-				os.Exit(1)
-			}
-			return
-		case "service-uninstall":
-			if err := runServiceUninstall(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "service-uninstall:", err)
-				os.Exit(1)
-			}
-			return
+	// `waggle mcp` runs the read-only MCP server over stdio against a database
+	// file, for clients (e.g. Claude) that spawn the process directly. It must
+	// be handled before config.Load parses the global flag set.
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		if err := runMCPStdio(os.Args[2:]); err != nil {
+			slog.Error("mcp stdio exited", "err", err)
+			os.Exit(1)
 		}
+		return
 	}
 
 	cfg, err := config.Load()
