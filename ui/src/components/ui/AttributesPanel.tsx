@@ -90,7 +90,7 @@ export function AttributesPanel({
               <div className="flex items-center gap-1">
                 <TypePill type={r.type} />
                 <span
-                  className="text-xs font-mono truncate"
+                  className="text-xs font-mono min-w-0 break-all"
                   style={{ color: "var(--color-ink-muted)" }}
                 >
                   {r.key}
@@ -128,10 +128,42 @@ export function AttributesPanel({
   );
 }
 
+/**
+ * Compact inline key/value list for places where the full panel chrome
+ * (search box, type pills, filter buttons) is too heavy — span links,
+ * event previews. Rows deliberately reserve no fixed key column: a key
+ * too wide for the space left takes the line and its value wraps below,
+ * so a long key can never be painted over its own value. Both cells
+ * break on any character, so a 10-digit counter or a prose message wraps
+ * instead of widening the container.
+ */
+export function InlineAttrList({ rows }: { rows: AttrRow[] }) {
+  return (
+    <div className="flex flex-col gap-1">
+      {rows.map((r) => (
+        <div
+          key={r.key}
+          className="flex flex-wrap items-baseline gap-x-3 text-xs font-mono"
+        >
+          <span
+            className="shrink-0 max-w-full break-all"
+            style={{ color: "var(--color-ink-muted)" }}
+          >
+            {r.key}
+          </span>
+          <span className="min-w-0 break-all whitespace-pre-wrap">
+            {formatValue(r.value)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TypePill({ type }: { type: string }) {
   return (
     <span
-      className="inline-block text-[9px] uppercase tracking-wide mr-2 px-1 rounded"
+      className="inline-block shrink-0 text-[9px] uppercase tracking-wide mr-2 px-1 rounded"
       style={{
         background: "var(--color-surface-muted)",
         color: "var(--color-ink-muted)",
