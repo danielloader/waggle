@@ -596,15 +596,23 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 	// count would bury a field present on *every* row beneath high-
 	// cardinality per-row attributes and, with the limit the UI's pickers
 	// use, push it off the list entirely.
-	resourceFields, err := s.listResourceFields(ctx, f, resourceFieldBudget(limit))
+	//
+	// Their budget comes out of what the synthetic fields leave behind, and is
+	// a third of it, so the tail truncation below can never spend a response
+	// on resource keys at the expense of the signal's own high-count fields.
+	resourceFields, err := s.listResourceFields(ctx, f, resourceFieldBudget(limit, len(out)))
 	if err != nil {
 		return nil, err
 	}
+	fromResource := make(map[string]struct{}, len(resourceFields))
 	for _, fi := range resourceFields {
-		if idx, ok := byKey[fi.Key]; ok {
-			out[idx].Count += fi.Count
+		// A key catalogued at both scopes keeps its row-scoped count (added
+		// below) rather than a sum of the two: the counts are in different
+		// units, and adding them produces a number that means neither.
+		if _, ok := byKey[fi.Key]; ok {
 			continue
 		}
+		fromResource[fi.Key] = struct{}{}
 		byKey[fi.Key] = len(out)
 		out = append(out, fi)
 	}
@@ -630,7 +638,15 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 			return nil, err
 		}
 		if idx, ok := byKey[fi.Key]; ok {
-			out[idx].Count += fi.Count
+			// Row-scoped counts are the meaningful unit, so a key that came
+			// from the resource partition takes this count rather than
+			// accumulating both.
+			if _, dual := fromResource[fi.Key]; dual {
+				out[idx].Count = fi.Count
+				delete(fromResource, fi.Key)
+			} else {
+				out[idx].Count += fi.Count
+			}
 			continue
 		}
 		byKey[fi.Key] = len(out)
@@ -648,12 +664,15 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 // resourceFieldBudget caps how much of a field-list response resource
 // attributes may occupy, so a process reporting an unusually large resource
 // (hundreds of attributes) can't crowd the signal's own keys out of a
-// 30-entry picker.
-func resourceFieldBudget(limit int) int {
-	if limit < 2 {
+// 30-entry picker. `used` is the space the synthetic fields have already
+// taken; resource keys get a third of the remainder, leaving the rest for the
+// signal's own attribute keys.
+func resourceFieldBudget(limit, used int) int {
+	remaining := limit - used
+	if remaining < 3 {
 		return 1
 	}
-	return limit / 2
+	return remaining / 3
 }
 
 // listResourceFields reads the resource-attribute partition of the key

@@ -895,3 +895,87 @@ func TestBuild_HavingMatchesDottedAlias(t *testing.T) {
 		t.Errorf("ORDER BY should reference the select alias; got:\n%s", c.SQL)
 	}
 }
+
+// Flattening dots to underscores is lossy: `deploy.runtime` and
+// `deploy-runtime` both sanitize to `deploy_runtime`. Two columns sharing an
+// output alias make any HAVING / ORDER BY reference to them ambiguous, so the
+// second gets a suffix — and each reference still binds to the column the user
+// named rather than to whichever one came first.
+func TestBuild_CollidingAliasesStayDistinct(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetSpans,
+		TimeRange: tr(),
+		Select: []Aggregation{
+			{Op: OpCount},
+			{Op: OpMax, Field: "queue.depth", Alias: "peak.depth"},
+			{Op: OpMin, Field: "queue.depth", Alias: "peak-depth"},
+		},
+		GroupBy: []string{"deploy.runtime", "deploy-runtime"},
+		Having:  []Filter{{Field: "peak-depth", Op: FilterGt, Value: 1}},
+		OrderBy: []Order{{Field: "peak.depth", Dir: "desc"}},
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]int{}
+	for _, col := range c.Columns {
+		seen[col.Name]++
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate output alias %q (%d times): %+v", name, n, c.Columns)
+		}
+	}
+	for _, want := range []string{
+		"deploy_runtime",
+		"deploy_runtime_2",
+		"peak_depth",
+		"peak_depth_2",
+	} {
+		if !hasAlias(c.Columns, want) {
+			t.Errorf("missing alias %q: %+v", want, c.Columns)
+		}
+	}
+	// Labels still distinguish them for the reader.
+	labels := map[string]string{}
+	for _, col := range c.Columns {
+		labels[col.Name] = col.Label
+	}
+	if labels["deploy_runtime"] != "deploy.runtime" || labels["deploy_runtime_2"] != "deploy-runtime" {
+		t.Errorf("group-by labels lost the original keys: %+v", labels)
+	}
+	// The HAVING reference named the *second* alias's field, and the ORDER BY
+	// the first: neither may bind to the other.
+	if !strings.Contains(c.SQL, "HAVING peak_depth_2 > ?") {
+		t.Errorf("HAVING bound to the wrong column; got:\n%s", c.SQL)
+	}
+	if !strings.Contains(c.SQL, "ORDER BY peak_depth DESC") {
+		t.Errorf("ORDER BY bound to the wrong column; got:\n%s", c.SQL)
+	}
+}
+
+// Two identical aggregations are a degenerate case of the same collision:
+// SQLite tolerates duplicate output aliases, the group-splitting on the other
+// side of the wire does not.
+func TestBuild_RepeatedAggregationGetsDistinctAlias(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetSpans,
+		TimeRange: tr(),
+		Select:    []Aggregation{{Op: OpCount}, {Op: OpCount}},
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasAlias(c.Columns, "count") || !hasAlias(c.Columns, "count_2") {
+		t.Errorf("want count + count_2, got %+v", c.Columns)
+	}
+}

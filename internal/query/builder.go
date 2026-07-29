@@ -218,9 +218,18 @@ type builder struct {
 	// attribute. It gates the resources join in datasetFromClause, so a
 	// query that only touches real columns emits no join at all.
 	joinResource bool
+	// aliasByRef maps a select entry's user-facing name — the field name for
+	// a GROUP BY, the alias (explicit or defaulted) for an aggregation — to
+	// the SQL alias it was emitted under. HAVING and ORDER BY resolve through
+	// this rather than by re-sanitizing the reference, so a reference always
+	// binds to the column the user meant even when two different field names
+	// flatten to the same identifier.
+	aliasByRef map[string]string
 }
 
-func newBuilder(q *Query) *builder { return &builder{q: q} }
+func newBuilder(q *Query) *builder {
+	return &builder{q: q, aliasByRef: map[string]string{}}
+}
 
 func (b *builder) build() (Compiled, error) {
 	// 1) Time bucket column (prepended if requested)
@@ -240,7 +249,7 @@ func (b *builder) build() (Compiled, error) {
 		if err != nil {
 			return Compiled{}, err
 		}
-		alias := sanitizeAlias(g)
+		alias := b.uniqueAlias(sanitizeAlias(g), g)
 		// Label is the field name as the user wrote it — `db.client.port`,
 		// not the SQL-safe `db_client_port` alias.
 		b.addSelect(sqlExpr.SQL, alias, g, sqlExpr.Type)
@@ -334,7 +343,7 @@ func (b *builder) buildAggregations() ([]RateSpec, error) {
 				alias = defaultAggAlias(a)
 			}
 			colIdx := len(b.cols)
-			b.addSelect(aggSQL, sanitizeAlias(alias), aggLabel(a), "float")
+			b.addSelect(aggSQL, b.uniqueAlias(sanitizeAlias(alias), alias), aggLabel(a), "float")
 			rates = append(rates, RateSpec{ColumnIndex: colIdx, BucketSecs: bucketSecs})
 			continue
 		}
@@ -346,7 +355,7 @@ func (b *builder) buildAggregations() ([]RateSpec, error) {
 		if alias == "" {
 			alias = defaultAggAlias(a)
 		}
-		b.addSelect(aggSQL, sanitizeAlias(alias), aggLabel(a), aggType)
+		b.addSelect(aggSQL, b.uniqueAlias(sanitizeAlias(alias), alias), aggLabel(a), aggType)
 	}
 	return rates, nil
 }
@@ -650,16 +659,34 @@ func (b *builder) havingFilter(f Filter) (string, error) {
 }
 
 // aliasRef matches a HAVING / ORDER BY reference against the SELECT output
-// aliases. Aliases are emitted SQL-safe, so a reference written the way the
-// user named it ("p95.duration") also matches its sanitized alias.
+// aliases. A reference written the way the user named it ("p95.duration",
+// "quotech.org.id") resolves through the recorded mapping rather than by
+// re-sanitizing, so it can't bind to a different column that happens to
+// flatten to the same identifier.
 func (b *builder) aliasRef(name string) (string, bool) {
 	if hasAlias(b.cols, name) {
 		return name, true
 	}
-	if s := sanitizeAlias(name); s != name && hasAlias(b.cols, s) {
-		return s, true
+	if alias, ok := b.aliasByRef[name]; ok {
+		return alias, true
 	}
 	return "", false
+}
+
+// uniqueAlias makes `candidate` unique among the SELECT aliases emitted so
+// far and records `ref` (the user-facing name that produced it) as pointing at
+// it. Flattening dots to underscores is lossy — `a.b` and `a-b` both become
+// `a_b` — and duplicate output aliases make any HAVING / ORDER BY reference to
+// them ambiguous, so collisions get a numeric suffix instead.
+func (b *builder) uniqueAlias(candidate, ref string) string {
+	alias := candidate
+	for n := 2; hasAlias(b.cols, alias); n++ {
+		alias = candidate + "_" + strconv.Itoa(n)
+	}
+	if _, taken := b.aliasByRef[ref]; !taken {
+		b.aliasByRef[ref] = alias
+	}
+	return alias
 }
 
 func (b *builder) clauseFor(lhs string, f Filter) (string, error) {

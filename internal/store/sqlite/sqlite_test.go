@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -350,5 +351,94 @@ func TestListFieldsAndValuesIncludeResourceAttributes(t *testing.T) {
 	}
 	if len(narrowed) != 1 || narrowed[0] != "server" {
 		t.Errorf("want [server], got %v", narrowed)
+	}
+}
+
+// A resource reporting many attributes must not spend the whole field-list
+// response, and a key catalogued at both scopes must not end up with a count
+// that is the sum of two different units.
+func TestListFieldsResourceBudgetAndCounts(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	batch := store.Batch{
+		Resources: []store.Resource{{
+			ID: 1, ServiceName: "svc", AttributesJSON: `{"service.name":"svc"}`,
+			FirstSeenNS: now, LastSeenNS: now,
+		}},
+		Scopes: []store.Scope{{ID: 1, Name: "go.test"}},
+		MetricEvents: []store.MetricEvent{{
+			TimeNS: now, ResourceID: 1, ScopeID: 1, ServiceName: "svc",
+			AttributesJSON: `{"requests.total":1}`,
+		}},
+	}
+	// 40 resource attributes, each with a far higher count than any of the
+	// signal's own keys — ranking alone would let them take the whole list.
+	for i := range 40 {
+		batch.AttrKeys = append(batch.AttrKeys, store.AttrKeyDelta{
+			SignalType: store.SignalResource, ServiceName: "svc",
+			Key: fmt.Sprintf("res.attr%02d", i), ValueType: "str",
+			Count: 100_000, LastSeenNS: now,
+		})
+	}
+	// 40 metric keys with low counts, plus one key catalogued at both scopes.
+	for i := range 40 {
+		batch.AttrKeys = append(batch.AttrKeys, store.AttrKeyDelta{
+			SignalType: store.SignalMetric, ServiceName: "svc",
+			Key: fmt.Sprintf("metric.attr%02d", i), ValueType: "int",
+			Count: 5, LastSeenNS: now,
+		})
+	}
+	batch.AttrKeys = append(batch.AttrKeys,
+		store.AttrKeyDelta{SignalType: store.SignalResource, ServiceName: "svc",
+			Key: "dual.key", ValueType: "str", Count: 7, LastSeenNS: now},
+		store.AttrKeyDelta{SignalType: store.SignalMetric, ServiceName: "svc",
+			Key: "dual.key", ValueType: "str", Count: 900, LastSeenNS: now},
+	)
+	if err := s.WriteBatch(ctx, batch); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	const limit = 30
+	fields, err := s.ListFields(ctx, store.FieldFilter{
+		SignalType: store.SignalMetric, Service: "svc", Limit: limit,
+	})
+	if err != nil {
+		t.Fatalf("ListFields: %v", err)
+	}
+	if len(fields) != limit {
+		t.Fatalf("want %d fields, got %d", limit, len(fields))
+	}
+	var resourceCount, metricCount int
+	var dual store.FieldInfo
+	for _, fi := range fields {
+		switch {
+		case strings.HasPrefix(fi.Key, "res.attr"):
+			resourceCount++
+		case strings.HasPrefix(fi.Key, "metric.attr"):
+			metricCount++
+		case fi.Key == "dual.key":
+			dual = fi
+		}
+	}
+	// Synthetic fields take 3 of the 30 for metrics; resource keys get a third
+	// of the remaining 27.
+	if resourceCount > 9 {
+		t.Errorf("resource keys took %d slots of %d, expected at most 9", resourceCount, limit)
+	}
+	if metricCount == 0 {
+		t.Errorf("the signal's own keys were crowded out entirely: %+v", fields)
+	}
+	// 900 (rows) rather than 907 (rows + resource observations).
+	if dual.Key == "" {
+		t.Fatalf("dual.key missing from %+v", fields)
+	}
+	if dual.Count != 900 {
+		t.Errorf("dual-scope key count: want the row-scoped 900, got %d", dual.Count)
 	}
 }
