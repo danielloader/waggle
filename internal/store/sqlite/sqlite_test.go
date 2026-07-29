@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -233,4 +234,211 @@ func TestListServicesByDataset(t *testing.T) {
 	only("logs", "logger")
 	only("metrics", "metricer")
 	only("", "spanner") // empty defaults to spans
+}
+
+// Resource attributes are queryable on every dataset, so they have to appear
+// in every dataset's field catalogue — and their values have to come back for
+// autocomplete even though the ingest-time value sampler never sees them.
+func TestListFieldsAndValuesIncludeResourceAttributes(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	statusCode := int32(0)
+	batch := store.Batch{
+		Resources: []store.Resource{
+			{
+				ID: 1, ServiceName: "workbench",
+				AttributesJSON: `{"host.name":"box-1","quotech.runtime":"server","service.name":"workbench"}`,
+				FirstSeenNS:    now, LastSeenNS: now,
+			},
+			{
+				ID: 2, ServiceName: "run-job",
+				AttributesJSON: `{"host.name":"box-2","quotech.runtime":"job-run","service.name":"run-job"}`,
+				FirstSeenNS:    now, LastSeenNS: now,
+			},
+		},
+		Scopes: []store.Scope{{ID: 1, Name: "go.test"}},
+		Events: []store.Event{{
+			TimeNS: now, ResourceID: 1, ScopeID: 1, ServiceName: "workbench", Name: "root",
+			TraceID: []byte("0123456789abcdef"), SpanID: []byte("01234567"),
+			StatusCode:     &statusCode,
+			AttributesJSON: `{"meta.signal_type":"span"}`,
+		}},
+		MetricEvents: []store.MetricEvent{{
+			TimeNS: now, ResourceID: 2, ScopeID: 1, ServiceName: "run-job",
+			AttributesJSON: `{"meta.signal_type":"metric","requests.total":3}`,
+		}},
+		AttrKeys: []store.AttrKeyDelta{
+			{SignalType: store.SignalResource, ServiceName: "workbench", Key: "quotech.runtime", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalResource, ServiceName: "run-job", Key: "quotech.runtime", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalResource, ServiceName: "workbench", Key: "host.name", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalMetric, ServiceName: "run-job", Key: "requests.total", ValueType: "int", Count: 900, LastSeenNS: now},
+		},
+	}
+	if err := s.WriteBatch(ctx, batch); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	// Every signal's catalogue carries the resource key, not just the signal
+	// that happened to be ingested alongside it.
+	for _, signal := range []string{store.SignalSpan, store.SignalLog, store.SignalMetric} {
+		fields, err := s.ListFields(ctx, store.FieldFilter{SignalType: signal})
+		if err != nil {
+			t.Fatalf("ListFields(%s): %v", signal, err)
+		}
+		var found bool
+		for _, fi := range fields {
+			if fi.Key == "quotech.runtime" {
+				found = true
+				if fi.ValueType != "str" {
+					t.Errorf("%s: quotech.runtime type: want str, got %q", signal, fi.ValueType)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: catalogue missing quotech.runtime: %+v", signal, fields)
+		}
+	}
+
+	// Service scoping applies: host.name is only catalogued for workbench.
+	scoped, err := s.ListFields(ctx, store.FieldFilter{SignalType: store.SignalMetric, Service: "run-job"})
+	if err != nil {
+		t.Fatalf("ListFields scoped: %v", err)
+	}
+	for _, fi := range scoped {
+		if fi.Key == "host.name" {
+			t.Errorf("host.name should not be catalogued for run-job: %+v", scoped)
+		}
+	}
+
+	// "resource" is a catalogue partition, not a queryable dataset.
+	if _, err := s.ListFields(ctx, store.FieldFilter{SignalType: store.SignalResource}); err == nil {
+		t.Error("ListFields should reject signal_type=resource")
+	}
+
+	// Values come from the resources table (there are no attribute_values
+	// rows for these keys at all), on any dataset.
+	values, err := s.ListFieldValues(ctx, store.ValueFilter{
+		SignalType: store.SignalMetric, Key: "quotech.runtime",
+	})
+	if err != nil {
+		t.Fatalf("ListFieldValues: %v", err)
+	}
+	want := map[string]bool{"server": false, "job-run": false}
+	for _, v := range values {
+		if _, ok := want[v]; ok {
+			want[v] = true
+		}
+	}
+	for v, seen := range want {
+		if !seen {
+			t.Errorf("resource value %q missing from %v", v, values)
+		}
+	}
+
+	// Prefix + service filters narrow resource values the same way.
+	narrowed, err := s.ListFieldValues(ctx, store.ValueFilter{
+		SignalType: store.SignalSpan, Key: "quotech.runtime",
+		Service: "workbench", Prefix: "ser",
+	})
+	if err != nil {
+		t.Fatalf("ListFieldValues narrowed: %v", err)
+	}
+	if len(narrowed) != 1 || narrowed[0] != "server" {
+		t.Errorf("want [server], got %v", narrowed)
+	}
+}
+
+// A resource reporting many attributes must not spend the whole field-list
+// response, and a key catalogued at both scopes must not end up with a count
+// that is the sum of two different units.
+func TestListFieldsResourceBudgetAndCounts(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	batch := store.Batch{
+		Resources: []store.Resource{{
+			ID: 1, ServiceName: "svc", AttributesJSON: `{"service.name":"svc"}`,
+			FirstSeenNS: now, LastSeenNS: now,
+		}},
+		Scopes: []store.Scope{{ID: 1, Name: "go.test"}},
+		MetricEvents: []store.MetricEvent{{
+			TimeNS: now, ResourceID: 1, ScopeID: 1, ServiceName: "svc",
+			AttributesJSON: `{"requests.total":1}`,
+		}},
+	}
+	// 40 resource attributes, each with a far higher count than any of the
+	// signal's own keys — ranking alone would let them take the whole list.
+	for i := range 40 {
+		batch.AttrKeys = append(batch.AttrKeys, store.AttrKeyDelta{
+			SignalType: store.SignalResource, ServiceName: "svc",
+			Key: fmt.Sprintf("res.attr%02d", i), ValueType: "str",
+			Count: 100_000, LastSeenNS: now,
+		})
+	}
+	// 40 metric keys with low counts, plus one key catalogued at both scopes.
+	for i := range 40 {
+		batch.AttrKeys = append(batch.AttrKeys, store.AttrKeyDelta{
+			SignalType: store.SignalMetric, ServiceName: "svc",
+			Key: fmt.Sprintf("metric.attr%02d", i), ValueType: "int",
+			Count: 5, LastSeenNS: now,
+		})
+	}
+	batch.AttrKeys = append(batch.AttrKeys,
+		store.AttrKeyDelta{SignalType: store.SignalResource, ServiceName: "svc",
+			Key: "dual.key", ValueType: "str", Count: 7, LastSeenNS: now},
+		store.AttrKeyDelta{SignalType: store.SignalMetric, ServiceName: "svc",
+			Key: "dual.key", ValueType: "str", Count: 900, LastSeenNS: now},
+	)
+	if err := s.WriteBatch(ctx, batch); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	const limit = 30
+	fields, err := s.ListFields(ctx, store.FieldFilter{
+		SignalType: store.SignalMetric, Service: "svc", Limit: limit,
+	})
+	if err != nil {
+		t.Fatalf("ListFields: %v", err)
+	}
+	if len(fields) != limit {
+		t.Fatalf("want %d fields, got %d", limit, len(fields))
+	}
+	var resourceCount, metricCount int
+	var dual store.FieldInfo
+	for _, fi := range fields {
+		switch {
+		case strings.HasPrefix(fi.Key, "res.attr"):
+			resourceCount++
+		case strings.HasPrefix(fi.Key, "metric.attr"):
+			metricCount++
+		case fi.Key == "dual.key":
+			dual = fi
+		}
+	}
+	// Synthetic fields take 3 of the 30 for metrics; resource keys get a third
+	// of the remaining 27.
+	if resourceCount > 9 {
+		t.Errorf("resource keys took %d slots of %d, expected at most 9", resourceCount, limit)
+	}
+	if metricCount == 0 {
+		t.Errorf("the signal's own keys were crowded out entirely: %+v", fields)
+	}
+	// 900 (rows) rather than 907 (rows + resource observations).
+	if dual.Key == "" {
+		t.Fatalf("dual.key missing from %+v", fields)
+	}
+	if dual.Count != 900 {
+		t.Errorf("dual-scope key count: want the row-scoped 900, got %d", dual.Count)
+	}
 }

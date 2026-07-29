@@ -206,7 +206,12 @@ func (t *transformer) registerResource(r *resourcepb.Resource) (uint64, string, 
 			FirstSeenNS:       t.now,
 			LastSeenNS:        t.now,
 		}
-		t.noteAttrKeys("resource", "", r.GetAttributes())
+		// Resource attribute keys get their own catalogue partition, keyed by
+		// the resource's own service so a service-scoped field picker only
+		// offers keys that service actually reports. Store.ListFields folds
+		// this partition into every signal's field list — the query builder
+		// resolves resource attributes on all three datasets.
+		t.noteAttrKeys(store.SignalResource, service, r.GetAttributes())
 	}
 	return id, service, dataset
 }

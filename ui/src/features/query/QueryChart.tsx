@@ -25,7 +25,7 @@ interface ChartTooltipContentProps {
   payload?: ChartTooltipPayloadItem[];
   bucketMs: number;
 }
-import type { QueryResult } from "../../lib/query";
+import { columnHeader, type QueryResult } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 
 export type MissingValuesMode = "auto" | "zero" | "omit";
@@ -61,17 +61,24 @@ interface Props {
 /** aggregationIndices returns one entry per aggregation column in the
  *  result — callers iterate these to render one chart per SELECT.
  *
+ *  `name` is the column alias (stable identity — use it for keys and state);
+ *  `label` is how the aggregation should be shown, e.g.
+ *  "MAX(db.client.network.sent)".
+ *
  *  Column layout from the builder (when bucketed):
  *    [0]            bucket_ns
  *    [1..1+G]       GROUP BY columns (len = group_keys.length)
  *    [1+G..end]     aggregations, one per SELECT item
  */
-export function aggregationIndices(result: QueryResult | undefined): { idx: number; label: string }[] {
+export function aggregationIndices(
+  result: QueryResult | undefined,
+): { idx: number; name: string; label: string }[] {
   if (!result || !result.has_bucket) return [];
   const firstAgg = 1 + (result.group_keys?.length ?? 0);
-  const out: { idx: number; label: string }[] = [];
+  const out: { idx: number; name: string; label: string }[] = [];
   for (let i = firstAgg; i < result.columns.length; i++) {
-    out.push({ idx: i, label: result.columns[i].name });
+    const col = result.columns[i];
+    out.push({ idx: i, name: col.name, label: columnHeader(col) });
   }
   return out;
 }
@@ -102,10 +109,12 @@ export function QueryChart({
   // Resolve "auto" → zero/omit based on aggregation alias. Caller
   // overrides win, so a single-SELECT count chart can still be shown
   // with gaps if the user really wants it.
-  const aggLabel = result?.columns[effectiveAggIdx]?.name ?? "";
+  // Zero-fill is decided from the column *alias*, not its display label —
+  // it's a behavioural check against known aggregation prefixes.
+  const aggName = result?.columns[effectiveAggIdx]?.name ?? "";
   const fillMode: Exclude<MissingValuesMode, "auto"> =
     missingValues === "auto"
-      ? (isZeroFillAgg(aggLabel) ? "zero" : "omit")
+      ? (isZeroFillAgg(aggName) ? "zero" : "omit")
       : missingValues;
 
   const { data, series } = useMemo(

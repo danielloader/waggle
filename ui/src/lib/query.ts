@@ -130,8 +130,31 @@ export interface Query {
 }
 
 export interface QueryColumn {
+  /**
+   * The column's identity: a SQL-safe alias. Attribute keys arrive flattened
+   * here (`quotech.org.id` → `quotech_org_id`) because SQL identifiers can't
+   * carry dots. Everything that keys off a column — series splitting, chart
+   * settings, HAVING / ORDER BY references — uses this.
+   */
   name: string;
+  /**
+   * The same column as the user expressed it: the dotted attribute key, or an
+   * aggregation like `MAX(db.client.network.sent)`. Display only, and absent
+   * for built-in columns whose real names (`time_ns`, `service_name`) are
+   * already what to show. Use columnHeader() rather than reading it directly.
+   */
+  label?: string;
   type: string;
+}
+
+/**
+ * How a result column should be shown to the user. OTel attribute keys are
+ * dotted, so the SQL-safe `name` is the wrong thing to put in a header — it
+ * can't be copied back into a filter or a group-by. Never derive a key from
+ * the return value; that's what `name` is for.
+ */
+export function columnHeader(col: QueryColumn): string {
+  return col.label && col.label !== "" ? col.label : col.name;
 }
 
 export interface QueryResult {

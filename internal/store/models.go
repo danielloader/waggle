@@ -35,6 +35,16 @@ const (
 	SignalSpan   = "span"
 	SignalLog    = "log"
 	SignalMetric = "metric"
+
+	// SignalResource is not a row type — no event carries it in
+	// meta.signal_type. It's the attribute_keys partition holding resource
+	// attribute keys, which describe the process that emitted a row rather
+	// than the row itself. Resource attributes are queryable on every
+	// dataset (the query builder resolves them via the resources join), so
+	// Store.ListFields merges this partition into all three signals'
+	// catalogues. It is deliberately NOT accepted as a FieldFilter
+	// SignalType: "resource" is not something a user can query on its own.
+	SignalResource = "resource"
 )
 
 // Event is a single row in the `events` table — a span or a log record.

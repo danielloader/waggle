@@ -16,6 +16,9 @@ query shapes the UI and API emit. Run on a MacBook (Apple Silicon, NVMe SSD,
 - **DB size on disk:** 4.42 GB (post-checkpoint, WAL truncated)
 - **Schema:** v3 — `events` (spans+logs) + `metric_events` (folded Honeycomb-style)
 - **Services:** 8 × 2 instances = 16 resources, timestamps spread over 24 h
+- **Resource attributes:** `deployment.environment=production` on every
+  resource, plus `deploy.runtime` alternating `server` / `job` per instance, so
+  a resource-attribute breakdown has two roughly equal halves to split
 - **Generation time:** 18m31s with `cmd/loadgen-bulk`
 
 ## Reproduction
@@ -74,3 +77,42 @@ All timings are the median of 3 consecutive runs against a warm OS page cache.
 | 28 | COUNT(\*) + AVG duration of ERROR spans (status\_code=2) by service | 8 | 5.563s | 5.568s | 5.597s |
 | 29 | LIST attribute\_keys for spans (field catalog) | 88 | <1ms | <1ms | <1ms |
 | 30 | COUNT(\*) entire events table (all signals) | 1 | 125ms | 125ms | 125ms |
+
+The battery also carries five cases added alongside resource-attribute query
+support — the `resource fallthrough` and `resource attribute` labels, plus the
+no-join pair for one of them. They are absent from the table above because they
+were not measured in the same run; see below.
+
+## The resources join
+
+Resource attributes resolve to
+`COALESCE(json_extract(<base>.attributes, …), json_extract(res.attributes, …))`
+over a `LEFT JOIN resources`, emitted only when a field falls through to
+attribute JSON. A query resolving entirely to real columns emits no join, so
+every timing in the table above is unaffected by design, not by measurement.
+
+What the join costs when it *is* emitted, on the 10M dataset:
+
+| Shape | No join | With fallthrough |
+|-------|---------|------------------|
+| `COUNT(*) … WHERE component = 'middleware'` (row attribute) | 12.4s CPU | 12.5s CPU |
+| `COUNT(*) … GROUP BY component` (row attribute) | 22.6s CPU | 25.0s CPU |
+| `COUNT(*) … GROUP BY deploy.runtime` (resource attribute) | not expressible | 25.9s CPU |
+| `AVG(cpu.utilization) … GROUP BY deploy.runtime` on metrics | not expressible | 6.2s CPU |
+
+Reading: a filter is free — `COALESCE` short-circuits, so rows carrying the key
+themselves never touch the resource JSON. A full-scan `GROUP BY` evaluates the
+expression for every row and pays about 10% more CPU. `resources` holds one row
+per distinct attribute set (16 here, tens in practice) and is joined on its
+`INTEGER PRIMARY KEY`, so the seek itself is not the cost; the second
+`json_extract` on rows that lack the key is. No index was added — there is
+nothing an index could do for a JSON extraction over every row.
+
+**These four figures are CPU time (user+sys), not wall clock, and are not
+comparable to the table above.** They were taken on a volume at 98% capacity
+under memory pressure, where wall-clock varied by more than 2× between
+consecutive runs of the *same* query — enough to swamp the effect being
+measured. CPU time was stable across repeats, so it is what is quoted. They
+were also taken through the `sqlite3` CLI rather than the pure-Go driver the
+harness and the app use. Re-run the full battery on a quiet machine to get
+figures that belong in the table.

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import type { Dataset, QueryResult, QuerySearch } from "../../lib/query";
-import { buildOverviewQuery, runQuery } from "../../lib/query";
+import { buildOverviewQuery, columnHeader, runQuery } from "../../lib/query";
 import { serviceColor } from "../../lib/colors";
 
 interface Props {
@@ -82,10 +82,10 @@ function ScalarView({ result }: { result: QueryResult }) {
       {result.columns.map((col, i) => (
         <div key={col.name} className="flex items-baseline gap-4 py-3 px-4">
           <div
-            className="text-xs uppercase tracking-wider"
+            className="text-xs tracking-wider font-mono"
             style={{ color: "var(--color-ink-muted)", minWidth: 180 }}
           >
-            {col.name}
+            {columnHeader(col)}
           </div>
           <div className="text-2xl font-semibold tabular-nums">
             {formatScalar(row[i])}
@@ -130,7 +130,7 @@ function GroupedView({
           <tr>
             {result.columns.map((col, i) => (
               <Th key={col.name} align={i >= groupCount ? "right" : "left"}>
-                {col.name}
+                {columnHeader(col)}
               </Th>
             ))}
           </tr>
@@ -248,7 +248,7 @@ function Th({
 }) {
   return (
     <th
-      className="px-4 py-2 border-b font-medium uppercase tracking-wide"
+      className="px-4 py-2 border-b font-medium tracking-wide font-mono"
       style={{
         borderColor: "var(--color-border)",
         textAlign: align,

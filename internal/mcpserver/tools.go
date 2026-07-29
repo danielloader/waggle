@@ -58,12 +58,12 @@ func registerTools(s *mcp.Server, t *tools) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_fields",
-		Description: "List queryable attribute keys (the schema) for a dataset, optionally scoped to a service or key prefix. Use before building a query to learn what fields exist. Metric names are themselves attribute keys on the metrics dataset.",
+		Description: "List queryable attribute keys (the schema) for a dataset, optionally scoped to a service or key prefix. Use before building a query to learn what fields exist. Metric names are themselves attribute keys on the metrics dataset. Resource attributes (service.version, host.name, deployment.environment, and any custom ones) are listed for every dataset — they describe the emitting process and are queryable on all of them.",
 	}, t.listFields)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_field_values",
-		Description: "List observed values for one attribute key, to help build valid filters. Backed by the ingest-time value catalog (str/int/bool keys only).",
+		Description: "List observed values for one attribute key, to help build valid filters. Backed by the ingest-time value catalog (str/int/bool keys only); resource attribute values come from the resource records themselves and are complete rather than sampled.",
 	}, t.listFieldValues)
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -77,7 +77,10 @@ func registerTools(s *mcp.Server, t *tools) {
 			"Aggregate with select (count, sum, avg, min, max, p50/p90/p95/p99, rate_sum/rate_avg/rate_max), " +
 			"filter with where, break down with group_by, and time-series with bucket_ms. " +
 			"Leave select empty for raw matching rows. Prefer aggregations over raw rows to keep results small. " +
-			"Unknown fields resolve against event attributes automatically.",
+			"Unknown fields resolve against the row's own attributes and then the resource's, under the plain key — " +
+			"so service.version or a custom resource attribute filters and groups like any other field. " +
+			"A row attribute wins over a resource attribute of the same name. " +
+			"Result columns carry a SQL-safe `name` plus a `label` showing the field as written (dotted keys intact).",
 	}, t.runQuery)
 
 	mcp.AddTool(s, &mcp.Tool{

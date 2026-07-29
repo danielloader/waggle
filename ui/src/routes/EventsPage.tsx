@@ -332,21 +332,21 @@ function ChartStack({
   // ephemeral re-renders; resets when the user changes the query). Not
   // currently persisted to URL — deliberate for now, the Edit Chart
   // controls are exploratory rather than something users need to share.
-  const [settingsByLabel, setSettingsByLabel] = useState<
+  const [settingsByName, setSettingsByName] = useState<
     Record<string, ChartSettings>
   >({});
 
-  const updateSetting = (label: string, patch: Partial<ChartSettings>) =>
-    setSettingsByLabel((prev) => ({
+  const updateSetting = (name: string, patch: Partial<ChartSettings>) =>
+    setSettingsByName((prev) => ({
       ...prev,
-      [label]: { ...(prev[label] ?? DEFAULT_CHART_SETTINGS), ...patch },
+      [name]: { ...(prev[name] ?? DEFAULT_CHART_SETTINGS), ...patch },
     }));
 
   // While the query is in-flight (and we still have no prior result), we
   // fall back to a single chart so the loading spinner appears where the
   // chart will land.
   if (aggs.length === 0) {
-    const settings = settingsByLabel["__default__"] ?? DEFAULT_CHART_SETTINGS;
+    const settings = settingsByName["__default__"] ?? DEFAULT_CHART_SETTINGS;
     return (
       <ChartWithEdit
         label=""
@@ -369,13 +369,15 @@ function ChartStack({
   return (
     <div className="flex flex-col gap-4">
       {aggs.map((a) => {
-        const settings = settingsByLabel[a.label] ?? DEFAULT_CHART_SETTINGS;
+        // Settings are keyed by the column alias, not its display label —
+        // the alias is the stable identity.
+        const settings = settingsByName[a.name] ?? DEFAULT_CHART_SETTINGS;
         return (
           <ChartWithEdit
             key={a.idx}
             label={a.label}
             settings={settings}
-            onSettingsChange={(patch) => updateSetting(a.label, patch)}
+            onSettingsChange={(patch) => updateSetting(a.name, patch)}
           >
             <QueryChart
               result={result}
@@ -410,7 +412,7 @@ function ChartWithEdit({
     <div>
       <div className="flex items-center justify-between pb-1 px-1">
         <div
-          className="text-[11px] uppercase tracking-wide font-medium"
+          className="text-[11px] tracking-wide font-medium font-mono"
           style={{ color: "var(--color-ink-muted)" }}
         >
           {label}

@@ -588,6 +588,35 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		byKey[fi.Key] = i
 	}
 
+	// Resource attributes belong in every signal's catalogue: they describe
+	// the emitting process, not the row, and the query builder resolves them
+	// on all three datasets. They're merged ahead of the signal's own keys
+	// rather than ranked alongside them because their count is one
+	// observation per resource per export batch, not one per row — ranking by
+	// count would bury a field present on *every* row beneath high-
+	// cardinality per-row attributes and, with the limit the UI's pickers
+	// use, push it off the list entirely.
+	//
+	// Their budget comes out of what the synthetic fields leave behind, and is
+	// a third of it, so the tail truncation below can never spend a response
+	// on resource keys at the expense of the signal's own high-count fields.
+	resourceFields, err := s.listResourceFields(ctx, f, resourceFieldBudget(limit, len(out)))
+	if err != nil {
+		return nil, err
+	}
+	fromResource := make(map[string]struct{}, len(resourceFields))
+	for _, fi := range resourceFields {
+		// A key catalogued at both scopes keeps its row-scoped count (added
+		// below) rather than a sum of the two: the counts are in different
+		// units, and adding them produces a number that means neither.
+		if _, ok := byKey[fi.Key]; ok {
+			continue
+		}
+		fromResource[fi.Key] = struct{}{}
+		byKey[fi.Key] = len(out)
+		out = append(out, fi)
+	}
+
 	// Service-scoped when f.Service is non-empty: include service-specific
 	// rows plus shared ones (service_name = ''). When empty, the sentinel
 	// clause `? = ''` is true and the whole filter passes, so we scan
@@ -609,7 +638,15 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 			return nil, err
 		}
 		if idx, ok := byKey[fi.Key]; ok {
-			out[idx].Count += fi.Count
+			// Row-scoped counts are the meaningful unit, so a key that came
+			// from the resource partition takes this count rather than
+			// accumulating both.
+			if _, dual := fromResource[fi.Key]; dual {
+				out[idx].Count = fi.Count
+				delete(fromResource, fi.Key)
+			} else {
+				out[idx].Count += fi.Count
+			}
 			continue
 		}
 		byKey[fi.Key] = len(out)
@@ -622,6 +659,51 @@ func (s *Store) ListFields(ctx context.Context, f store.FieldFilter) ([]store.Fi
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+// resourceFieldBudget caps how much of a field-list response resource
+// attributes may occupy, so a process reporting an unusually large resource
+// (hundreds of attributes) can't crowd the signal's own keys out of a
+// 30-entry picker. `used` is the space the synthetic fields have already
+// taken; resource keys get a third of the remainder, leaving the rest for the
+// signal's own attribute keys.
+func resourceFieldBudget(limit, used int) int {
+	remaining := limit - used
+	if remaining < 3 {
+		return 1
+	}
+	return remaining / 3
+}
+
+// listResourceFields reads the resource-attribute partition of the key
+// catalogue. Rows written before resource keys were service-scoped carry
+// service_name = ”, so the shared-row clause keeps them visible.
+func (s *Store) listResourceFields(
+	ctx context.Context,
+	f store.FieldFilter,
+	limit int,
+) ([]store.FieldInfo, error) {
+	const q = `SELECT key, value_type, SUM(count) AS c FROM attribute_keys
+		WHERE signal_type = ?
+		  AND (? = '' OR service_name = ? OR service_name = '')
+		  AND key LIKE ? || '%'
+		GROUP BY key, value_type
+		ORDER BY c DESC, key ASC LIMIT ?`
+	rows, err := s.reader.QueryContext(ctx, q,
+		store.SignalResource, f.Service, f.Service, f.Prefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []store.FieldInfo
+	for rows.Next() {
+		var fi store.FieldInfo
+		if err := rows.Scan(&fi.Key, &fi.ValueType, &fi.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, fi)
+	}
+	return out, rows.Err()
 }
 
 // syntheticFields per signal — promoted columns and meta.* attributes that are
@@ -706,6 +788,61 @@ func (s *Store) ListFieldValues(ctx context.Context, f store.ValueFilter) ([]str
 		GROUP BY value
 		ORDER BY SUM(count) DESC, value ASC LIMIT ?`
 	rows, err := s.reader.QueryContext(ctx, q, f.SignalType, f.Service, f.Service, f.Key, f.Prefix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// The key may be a resource attribute, which the ingest-time value
+	// sampler never observes. Read those straight from the resources table
+	// instead: it's authoritative rather than top-K sampled, one row per
+	// distinct resource identity so it's cheap to scan, and it works on
+	// databases written before any of this existed.
+	if len(out) < limit {
+		vals, err := s.listResourceValues(ctx, f, limit-len(out))
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range vals {
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
+// listResourceValues returns the distinct values a resource attribute takes.
+// json_each keeps the key parameterized — unlike a json_extract path, which
+// would have to be built by string concatenation.
+func (s *Store) listResourceValues(
+	ctx context.Context,
+	f store.ValueFilter,
+	limit int,
+) ([]string, error) {
+	const q = `SELECT DISTINCT CAST(je.value AS TEXT) AS v
+		FROM resources AS r, json_each(r.attributes) AS je
+		WHERE je.key = ?
+		  AND je.value IS NOT NULL
+		  AND (? = '' OR r.service_name = ?)
+		  AND CAST(je.value AS TEXT) LIKE ? || '%'
+		ORDER BY v ASC LIMIT ?`
+	rows, err := s.reader.QueryContext(ctx, q, f.Key, f.Service, f.Service, f.Prefix, limit)
 	if err != nil {
 		return nil, err
 	}
