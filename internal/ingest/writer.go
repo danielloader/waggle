@@ -132,17 +132,27 @@ func (w *Writer) loop(ctx context.Context) {
 	}
 
 	merge := func(b store.Batch) {
-		if len(pending.Events) == 0 && len(pending.Resources) == 0 && len(pending.Scopes) == 0 {
+		if len(pending.Events) == 0 && len(pending.MetricEvents) == 0 &&
+			len(pending.Resources) == 0 && len(pending.Scopes) == 0 {
 			pending = b
 		} else {
 			pending.Resources = append(pending.Resources, b.Resources...)
 			pending.Scopes = append(pending.Scopes, b.Scopes...)
 			pending.Events = append(pending.Events, b.Events...)
+			// MetricEvents has to be carried like every other slice. Omitting
+			// it discarded the metric rows of any batch that merged into a
+			// non-empty pending batch — and since a metric export always
+			// carries its resource, the batch after one always took this
+			// branch. Metrics were being dropped whenever two exports landed
+			// inside the same flush window.
+			pending.MetricEvents = append(pending.MetricEvents, b.MetricEvents...)
 			pending.AttrKeys = append(pending.AttrKeys, b.AttrKeys...)
 			pending.AttrValues = append(pending.AttrValues, b.AttrValues...)
 			pending.MetaOverwrites += b.MetaOverwrites
 		}
-		eventCount += len(b.Events)
+		// Metric rows count toward the size-based flush as well, so a
+		// metrics-only stream doesn't rely on the timer alone.
+		eventCount += len(b.Events) + len(b.MetricEvents)
 		metaOverwrites += b.MetaOverwrites
 		if timer == nil {
 			timer = time.NewTimer(w.flushEvery)
