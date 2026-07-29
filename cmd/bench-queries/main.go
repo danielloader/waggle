@@ -328,6 +328,66 @@ func main() {
 		},
 
 		// ------------------------------------------------------------------
+		// 24b. Same filter, compiled the way the builder compiles an unknown
+		// key now: row attributes first, resource attributes as the fallback.
+		// Paired with case 24 to price the COALESCE + resources join on a key
+		// that is *not* a resource attribute — the regression case.
+		// ------------------------------------------------------------------
+		{
+			label: "COUNT(*) spans WHERE component = 'middleware' (resource fallthrough)",
+			sql: `SELECT COUNT(*) FROM events
+				LEFT JOIN resources AS res ON res.resource_id = events.resource_id
+				WHERE signal_type = 'span'
+				AND COALESCE(json_extract(events.attributes, '$."component"'),
+				             json_extract(res.attributes, '$."component"')) = 'middleware'`,
+		},
+
+		// ------------------------------------------------------------------
+		// 24c/24d. GROUP BY an unknown key, without and with the fallthrough.
+		// A group-by evaluates the expression for every row rather than
+		// short-circuiting on the first match, so it's the worst case for the
+		// join.
+		// ------------------------------------------------------------------
+		{
+			label: "COUNT(*) spans GROUP BY component (json_extract, no join)",
+			sql: `SELECT json_extract(attributes, '$."component"') AS c, COUNT(*) AS cnt
+				FROM events WHERE signal_type = 'span'
+				GROUP BY c ORDER BY cnt DESC`,
+		},
+		{
+			label: "COUNT(*) spans GROUP BY component (resource fallthrough)",
+			sql: `SELECT COALESCE(json_extract(events.attributes, '$."component"'),
+			                     json_extract(res.attributes, '$."component"')) AS c,
+				COUNT(*) AS cnt
+				FROM events LEFT JOIN resources AS res ON res.resource_id = events.resource_id
+				WHERE signal_type = 'span'
+				GROUP BY c ORDER BY cnt DESC`,
+		},
+
+		// ------------------------------------------------------------------
+		// 24e/24f. Grouping by a genuine resource attribute — only reachable
+		// through the join, on both storage surfaces.
+		// ------------------------------------------------------------------
+		{
+			label: "COUNT(*) spans GROUP BY deploy.runtime (resource attribute)",
+			sql: `SELECT COALESCE(json_extract(events.attributes, '$."deploy.runtime"'),
+			                     json_extract(res.attributes, '$."deploy.runtime"')) AS rt,
+				COUNT(*) AS cnt
+				FROM events LEFT JOIN resources AS res ON res.resource_id = events.resource_id
+				WHERE signal_type = 'span'
+				GROUP BY rt ORDER BY cnt DESC`,
+		},
+		{
+			label: "AVG(cpu.utilization) metrics GROUP BY deploy.runtime (resource attribute)",
+			sql: `SELECT COALESCE(json_extract(metric_events.attributes, '$."deploy.runtime"'),
+			                     json_extract(res.attributes, '$."deploy.runtime"')) AS rt,
+				AVG(CAST(json_extract(metric_events.attributes, '$."cpu.utilization"') AS REAL)) AS avg_cpu
+				FROM metric_events
+				LEFT JOIN resources AS res ON res.resource_id = metric_events.resource_id
+				GROUP BY rt ORDER BY avg_cpu DESC`,
+		},
+
+		// ------------------------------------------------------------------
 		// 25. COUNT DISTINCT trace_id (cardinality)
 		// ------------------------------------------------------------------
 		{

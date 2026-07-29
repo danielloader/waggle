@@ -235,6 +235,13 @@ CREATE INDEX IF NOT EXISTS idx_metric_events_dataset_time  ON metric_events(data
 -- For metric_events the signal_type is 'metric'; metric-name keys like
 -- `requests.total` appear here so autocomplete can surface them in the
 -- field picker alongside real attributes.
+--
+-- signal_type = 'resource' is a fourth partition that isn't a row type:
+-- it catalogues the keys of `resources.attributes`. Resource attributes
+-- are queryable on every dataset (the query builder joins `resources` and
+-- resolves them under their plain key), so ListFields merges that
+-- partition into all three signals' field lists. Values for those keys
+-- come from `resources` directly, not from attribute_values.
 -- =========================================================================
 CREATE TABLE IF NOT EXISTS attribute_keys (
     signal_type   TEXT NOT NULL,

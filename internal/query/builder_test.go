@@ -91,8 +91,12 @@ func TestBuild_GeneratedColumnForHotField(t *testing.T) {
 	if !strings.Contains(c.SQL, "http_route AS http_route") {
 		t.Errorf("expected http_route generated column; got %s", c.SQL)
 	}
-	if strings.Contains(c.SQL, "json_extract(attributes") {
+	if strings.Contains(c.SQL, "json_extract(") {
 		t.Errorf("unexpected json_extract fallthrough: %s", c.SQL)
+	}
+	// A query that resolves entirely to real columns pays for no join.
+	if strings.Contains(c.SQL, "LEFT JOIN resources") {
+		t.Errorf("unexpected resources join for a column-backed field: %s", c.SQL)
 	}
 }
 
@@ -108,7 +112,7 @@ func TestBuild_UnknownAttributeFallsToJSONExtract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.SQL, `json_extract(attributes, '$."customer.tier"')`) {
+	if !strings.Contains(c.SQL, `json_extract(events.attributes, '$."customer.tier"')`) {
 		t.Errorf("expected json_extract for customer.tier; got %s", c.SQL)
 	}
 }
@@ -141,7 +145,7 @@ func TestBuild_FilterAndPercentile(t *testing.T) {
 		"percentile(duration_ns, 0.95) AS p95_duration_ns",
 		"COUNT(*) AS n",
 		"http_route AS http_route",
-		"service_name = ?",
+		"events.service_name = ?",
 		"http_status_code >= ?",
 		"GROUP BY",
 		"HAVING n > ?",
@@ -220,7 +224,7 @@ func TestBuild_FilterInWithArray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(c.SQL, "service_name IN (?,?,?)") {
+	if !strings.Contains(c.SQL, "events.service_name IN (?,?,?)") {
 		t.Errorf("IN expansion missing: %s", c.SQL)
 	}
 	// time(2) + in(3) = 5 args.
@@ -249,7 +253,9 @@ func TestBuild_ExistsFilter(t *testing.T) {
 	if !strings.Contains(c.SQL, "db_system IS NOT NULL") {
 		t.Errorf("exists missing: %s", c.SQL)
 	}
-	if !strings.Contains(c.SQL, `json_extract(attributes, '$."customer.tier"') IS NULL`) {
+	if !strings.Contains(c.SQL,
+		`COALESCE(json_extract(events.attributes, '$."customer.tier"'), `+
+			`json_extract(res.attributes, '$."customer.tier"')) IS NULL`) {
 		t.Errorf("!exists missing: %s", c.SQL)
 	}
 }
@@ -313,7 +319,7 @@ func TestBuild_NegativeStringFilters(t *testing.T) {
 		"http_route LIKE ?",     // starts-with
 		"http_route NOT LIKE ?", // !starts-with or !ends-with
 		"NOT LIKE ?",            // !contains
-		"service_name NOT IN (?,?)",
+		"events.service_name NOT IN (?,?)",
 	} {
 		if !strings.Contains(c.SQL, want) {
 			t.Errorf("SQL missing %q; got:\n%s", want, c.SQL)
@@ -633,5 +639,259 @@ func TestBuild_DurationMSField(t *testing.T) {
 		if !strings.Contains(c.SQL, s) {
 			t.Errorf("SQL missing %q; got:\n%s", s, c.SQL)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Resource attributes
+// ---------------------------------------------------------------------------
+
+// An unknown key resolves against the row's attributes *and* the resource's,
+// row-first, on every dataset. The join is what makes the resource side
+// reachable, so assert both halves together.
+func TestBuild_ResourceAttributeFallthroughPerDataset(t *testing.T) {
+	cases := []struct {
+		dataset Dataset
+		base    string
+	}{
+		{DatasetSpans, "events"},
+		{DatasetLogs, "events"},
+		{DatasetMetrics, "metric_events"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.dataset), func(t *testing.T) {
+			q := Query{
+				Dataset:   c.dataset,
+				TimeRange: tr(),
+				Select:    []Aggregation{{Op: OpCount}},
+				Where:     []Filter{{Field: "quotech.runtime", Op: FilterEq, Value: "server"}},
+				GroupBy:   []string{"quotech.runtime"},
+			}
+			if err := q.Validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			compiled, err := Build(&q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{
+				// Row attributes first, resource attributes as the fallback.
+				`COALESCE(json_extract(` + c.base + `.attributes, '$."quotech.runtime"'), ` +
+					`json_extract(res.attributes, '$."quotech.runtime"'))`,
+				"LEFT JOIN resources AS res ON res.resource_id = " + c.base + ".resource_id",
+			}
+			for _, s := range want {
+				if !strings.Contains(compiled.SQL, s) {
+					t.Errorf("SQL missing %q; got:\n%s", s, compiled.SQL)
+				}
+			}
+			// The group-by column keeps the dotted key as its display label
+			// while the SQL alias stays an identifier.
+			var found bool
+			for _, col := range compiled.Columns {
+				if col.Name == "quotech_runtime" {
+					found = true
+					if col.Label != "quotech.runtime" {
+						t.Errorf("group-by label: want %q, got %q", "quotech.runtime", col.Label)
+					}
+				}
+			}
+			if !found {
+				t.Errorf("missing quotech_runtime column: %+v", compiled.Columns)
+			}
+		})
+	}
+}
+
+// The join is emitted from the FROM clause, which is assembled before HAVING
+// and ORDER BY are written — so a resource attribute referenced *only* there
+// has to still bring the join with it.
+func TestBuild_ResourceJoinFromHavingAndOrderBy(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		q    Query
+	}{
+		{"having", Query{
+			Dataset:   DatasetSpans,
+			TimeRange: tr(),
+			Select:    []Aggregation{{Op: OpCount}},
+			GroupBy:   []string{"name"},
+			Having:    []Filter{{Field: "host.name", Op: FilterEq, Value: "box-1"}},
+		}},
+		{"order_by", Query{
+			Dataset:   DatasetSpans,
+			TimeRange: tr(),
+			Select:    []Aggregation{{Op: OpCount}},
+			OrderBy:   []Order{{Field: "host.name", Dir: "asc"}},
+		}},
+		{"aggregation", Query{
+			Dataset:   DatasetMetrics,
+			TimeRange: tr(),
+			Select:    []Aggregation{{Op: OpCountDistinct, Field: "host.name"}},
+		}},
+		{"raw mode filter", Query{
+			Dataset:   DatasetSpans,
+			TimeRange: tr(),
+			Where:     []Filter{{Field: "host.name", Op: FilterExists}},
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := c.q.Validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			compiled, err := Build(&c.q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(compiled.SQL, "LEFT JOIN resources AS res") {
+				t.Errorf("resources join missing; got:\n%s", compiled.SQL)
+			}
+			if !strings.Contains(compiled.SQL, "json_extract(res.attributes") {
+				t.Errorf("resource extraction missing; got:\n%s", compiled.SQL)
+			}
+		})
+	}
+}
+
+// Raw-rows mode selects `service_name` and `attributes`, both of which
+// `resources` also defines — they must be qualified or SQLite rejects the
+// statement as ambiguous once the join is in play.
+func TestBuild_RawModeQualifiesAmbiguousColumns(t *testing.T) {
+	for _, d := range []Dataset{DatasetSpans, DatasetLogs, DatasetMetrics} {
+		t.Run(string(d), func(t *testing.T) {
+			q := Query{
+				Dataset:   d,
+				TimeRange: tr(),
+				Where:     []Filter{{Field: "deployment.environment", Op: FilterEq, Value: "prod"}},
+			}
+			if err := q.Validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			compiled, err := Build(&q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := "events"
+			if d == DatasetMetrics {
+				base = "metric_events"
+			}
+			for _, s := range []string{
+				base + ".service_name AS service_name",
+				base + ".attributes AS attributes",
+			} {
+				if !strings.Contains(compiled.SQL, s) {
+					t.Errorf("SQL missing %q; got:\n%s", s, compiled.SQL)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Column labels
+// ---------------------------------------------------------------------------
+
+// Dotted attribute keys have to survive into the response so a header reads
+// back as the thing the user typed. The SQL alias is necessarily flattened;
+// Label carries the original. Built-in snake_case columns get no label.
+func TestBuild_ColumnLabelsPreserveDottedKeys(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetMetrics,
+		TimeRange: tr(),
+		Select: []Aggregation{
+			{Op: OpCount},
+			{Op: OpMax, Field: "db.client.network.sent"},
+			{Op: OpP95, Field: "db.client.operation.duration"},
+			{Op: OpSum, Field: "requests.total", Alias: "total.requests"},
+		},
+		GroupBy: []string{"quotech.org.id", "service.name"},
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"quotech_org_id":                   "quotech.org.id",
+		"service_name":                     "service.name",
+		"count":                            "COUNT",
+		"max_db_client_network_sent":       "MAX(db.client.network.sent)",
+		"p95_db_client_operation_duration": "P95(db.client.operation.duration)",
+		// An explicit alias is the user's own wording — used verbatim.
+		"total_requests": "total.requests",
+	}
+	got := map[string]string{}
+	for _, col := range c.Columns {
+		got[col.Name] = col.Label
+	}
+	for name, label := range want {
+		if got[name] != label {
+			t.Errorf("column %q label: want %q, got %q (all: %+v)", name, label, got[name], c.Columns)
+		}
+	}
+	// A user-supplied alias containing dots is not a valid bare SQL
+	// identifier; it has to be flattened in the statement itself.
+	if !strings.Contains(c.SQL, "AS total_requests") {
+		t.Errorf("dotted alias should be sanitized in SQL; got:\n%s", c.SQL)
+	}
+}
+
+// Built-in columns really are snake_case in the store, so labelling them
+// would be noise: Label stays empty and clients fall back to Name.
+func TestBuild_NoLabelForBuiltinColumns(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetSpans,
+		TimeRange: tr(),
+		Select:    []Aggregation{{Op: OpMax, Field: "duration_ns"}},
+		GroupBy:   []string{"service_name"},
+		BucketMS:  60_000,
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range c.Columns {
+		switch col.Name {
+		case "bucket_ns", "service_name":
+			if col.Label != "" {
+				t.Errorf("built-in column %q should carry no label, got %q", col.Name, col.Label)
+			}
+		case "max_duration_ns":
+			if col.Label != "MAX(duration_ns)" {
+				t.Errorf("aggregation label: want MAX(duration_ns), got %q", col.Label)
+			}
+		}
+	}
+}
+
+// A HAVING or ORDER BY reference written the way the user aliased it
+// ("total.requests") still binds to the SELECT output rather than falling
+// through to an attribute lookup.
+func TestBuild_HavingMatchesDottedAlias(t *testing.T) {
+	q := Query{
+		Dataset:   DatasetMetrics,
+		TimeRange: tr(),
+		Select:    []Aggregation{{Op: OpSum, Field: "requests.total", Alias: "total.requests"}},
+		GroupBy:   []string{"service.name"},
+		Having:    []Filter{{Field: "total.requests", Op: FilterGt, Value: 10}},
+		OrderBy:   []Order{{Field: "total.requests", Dir: "desc"}},
+	}
+	if err := q.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	c, err := Build(&q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.SQL, "HAVING total_requests > ?") {
+		t.Errorf("HAVING should reference the select alias; got:\n%s", c.SQL)
+	}
+	if !strings.Contains(c.SQL, "ORDER BY total_requests DESC") {
+		t.Errorf("ORDER BY should reference the select alias; got:\n%s", c.SQL)
 	}
 }

@@ -234,3 +234,121 @@ func TestListServicesByDataset(t *testing.T) {
 	only("metrics", "metricer")
 	only("", "spanner") // empty defaults to spans
 }
+
+// Resource attributes are queryable on every dataset, so they have to appear
+// in every dataset's field catalogue — and their values have to come back for
+// autocomplete even though the ingest-time value sampler never sees them.
+func TestListFieldsAndValuesIncludeResourceAttributes(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	now := time.Now().UnixNano()
+	statusCode := int32(0)
+	batch := store.Batch{
+		Resources: []store.Resource{
+			{
+				ID: 1, ServiceName: "workbench",
+				AttributesJSON: `{"host.name":"box-1","quotech.runtime":"server","service.name":"workbench"}`,
+				FirstSeenNS:    now, LastSeenNS: now,
+			},
+			{
+				ID: 2, ServiceName: "run-job",
+				AttributesJSON: `{"host.name":"box-2","quotech.runtime":"job-run","service.name":"run-job"}`,
+				FirstSeenNS:    now, LastSeenNS: now,
+			},
+		},
+		Scopes: []store.Scope{{ID: 1, Name: "go.test"}},
+		Events: []store.Event{{
+			TimeNS: now, ResourceID: 1, ScopeID: 1, ServiceName: "workbench", Name: "root",
+			TraceID: []byte("0123456789abcdef"), SpanID: []byte("01234567"),
+			StatusCode:     &statusCode,
+			AttributesJSON: `{"meta.signal_type":"span"}`,
+		}},
+		MetricEvents: []store.MetricEvent{{
+			TimeNS: now, ResourceID: 2, ScopeID: 1, ServiceName: "run-job",
+			AttributesJSON: `{"meta.signal_type":"metric","requests.total":3}`,
+		}},
+		AttrKeys: []store.AttrKeyDelta{
+			{SignalType: store.SignalResource, ServiceName: "workbench", Key: "quotech.runtime", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalResource, ServiceName: "run-job", Key: "quotech.runtime", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalResource, ServiceName: "workbench", Key: "host.name", ValueType: "str", Count: 5, LastSeenNS: now},
+			{SignalType: store.SignalMetric, ServiceName: "run-job", Key: "requests.total", ValueType: "int", Count: 900, LastSeenNS: now},
+		},
+	}
+	if err := s.WriteBatch(ctx, batch); err != nil {
+		t.Fatalf("WriteBatch: %v", err)
+	}
+
+	// Every signal's catalogue carries the resource key, not just the signal
+	// that happened to be ingested alongside it.
+	for _, signal := range []string{store.SignalSpan, store.SignalLog, store.SignalMetric} {
+		fields, err := s.ListFields(ctx, store.FieldFilter{SignalType: signal})
+		if err != nil {
+			t.Fatalf("ListFields(%s): %v", signal, err)
+		}
+		var found bool
+		for _, fi := range fields {
+			if fi.Key == "quotech.runtime" {
+				found = true
+				if fi.ValueType != "str" {
+					t.Errorf("%s: quotech.runtime type: want str, got %q", signal, fi.ValueType)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%s: catalogue missing quotech.runtime: %+v", signal, fields)
+		}
+	}
+
+	// Service scoping applies: host.name is only catalogued for workbench.
+	scoped, err := s.ListFields(ctx, store.FieldFilter{SignalType: store.SignalMetric, Service: "run-job"})
+	if err != nil {
+		t.Fatalf("ListFields scoped: %v", err)
+	}
+	for _, fi := range scoped {
+		if fi.Key == "host.name" {
+			t.Errorf("host.name should not be catalogued for run-job: %+v", scoped)
+		}
+	}
+
+	// "resource" is a catalogue partition, not a queryable dataset.
+	if _, err := s.ListFields(ctx, store.FieldFilter{SignalType: store.SignalResource}); err == nil {
+		t.Error("ListFields should reject signal_type=resource")
+	}
+
+	// Values come from the resources table (there are no attribute_values
+	// rows for these keys at all), on any dataset.
+	values, err := s.ListFieldValues(ctx, store.ValueFilter{
+		SignalType: store.SignalMetric, Key: "quotech.runtime",
+	})
+	if err != nil {
+		t.Fatalf("ListFieldValues: %v", err)
+	}
+	want := map[string]bool{"server": false, "job-run": false}
+	for _, v := range values {
+		if _, ok := want[v]; ok {
+			want[v] = true
+		}
+	}
+	for v, seen := range want {
+		if !seen {
+			t.Errorf("resource value %q missing from %v", v, values)
+		}
+	}
+
+	// Prefix + service filters narrow resource values the same way.
+	narrowed, err := s.ListFieldValues(ctx, store.ValueFilter{
+		SignalType: store.SignalSpan, Key: "quotech.runtime",
+		Service: "workbench", Prefix: "ser",
+	})
+	if err != nil {
+		t.Fatalf("ListFieldValues narrowed: %v", err)
+	}
+	if len(narrowed) != 1 || narrowed[0] != "server" {
+		t.Errorf("want [server], got %v", narrowed)
+	}
+}

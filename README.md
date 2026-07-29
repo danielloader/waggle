@@ -319,6 +319,18 @@ Meaning you can:
 - Correlate across signals — same `trace_id` filter works on spans and
   logs simultaneously.
 
+**Resource attributes are fields too.** Anything on the OTLP resource —
+`service.version`, `host.name`, `deployment.environment`, or your own
+`deploy.runtime` — filters, groups and aggregates under its plain key on
+all three datasets, with no prefix to remember, and appears in the field
+pickers alongside per-row attributes. Resources are stored deduplicated
+(one row per distinct attribute set) and joined back by `resource_id`
+when a query needs one, so `group_by: ["deploy.runtime"]` splits a
+single service's metrics by the runtime that emitted them even though
+the metric rows themselves carry only their own labels. Where a row and
+its resource define the same key the row wins — the narrower scope
+shadows the envelope it was emitted under.
+
 ## Config
 
 All flags have matching environment variables. Flags take precedence.

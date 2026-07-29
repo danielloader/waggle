@@ -199,6 +199,16 @@ type Order struct {
 // Column describes one output column of a compiled query — used by both the
 // executor (for scanning) and the HTTP response.
 type Column struct {
+	// Name is the column's identity: a SQL-safe alias, and the key clients
+	// use for HAVING / ORDER BY references and series splitting. Attribute
+	// keys are flattened here (`db.client.port` → `db_client_port`) because
+	// SQL identifiers can't carry dots unquoted.
 	Name string `json:"name"`
-	Type string `json:"type"` // "string" | "int" | "float" | "bool" | "time"
+	// Label is the same column as the user expressed it — the dotted
+	// attribute key, or an aggregation like "MAX(db.client.network.sent)".
+	// Display-only, and omitted when it would repeat Name (built-in columns
+	// like time_ns and service_name genuinely are snake_case). Clients
+	// render Label when present and Name otherwise; nothing keys off it.
+	Label string `json:"label,omitempty"`
+	Type  string `json:"type"` // "string" | "int" | "float" | "bool" | "time"
 }

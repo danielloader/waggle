@@ -28,8 +28,12 @@ func Build(q *Query) (Compiled, error) {
 // buildRaw emits SELECT <fixed columns> FROM events WHERE <filters>
 // ORDER BY time_ns DESC LIMIT ?. Used when the user wants the matching
 // events rather than an aggregation — the UI's "results" table mode.
+//
+// Every field reference is resolved before any SQL is assembled, because
+// resolution is what decides whether the FROM clause needs the resources
+// join (see resolveField).
 func (b *builder) buildRaw() (Compiled, error) {
-	cols, colSQL := rawColumnsFor(b.q.Dataset)
+	cols, colSQL := rawColumnsFor(b.q.Dataset, b.baseTable())
 	for _, c := range cols {
 		b.cols = append(b.cols, c)
 	}
@@ -49,21 +53,9 @@ func (b *builder) buildRaw() (Compiled, error) {
 		whereParts = append(whereParts, clause)
 	}
 
-	limit := b.q.Limit
-	if limit == 0 {
-		limit = 500
-	}
-
-	var sql strings.Builder
-	sql.WriteString("SELECT ")
-	sql.WriteString(strings.Join(b.selects, ", "))
-	sql.WriteString(" FROM ")
-	sql.WriteString(b.datasetFromClause())
-	sql.WriteString(" WHERE ")
-	sql.WriteString(strings.Join(whereParts, " AND "))
-
 	// Honor the user's ORDER BY when supplied; otherwise default to time
 	// descending (newest first, like a typical events feed).
+	orderClause := " ORDER BY " + timeCol + " DESC"
 	if len(b.q.OrderBy) > 0 {
 		orderParts := make([]string, 0, len(b.q.OrderBy))
 		for _, o := range b.q.OrderBy {
@@ -77,13 +69,22 @@ func (b *builder) buildRaw() (Compiled, error) {
 			}
 			orderParts = append(orderParts, expr+" "+dir)
 		}
-		sql.WriteString(" ORDER BY ")
-		sql.WriteString(strings.Join(orderParts, ", "))
-	} else {
-		sql.WriteString(" ORDER BY ")
-		sql.WriteString(timeCol)
-		sql.WriteString(" DESC")
+		orderClause = " ORDER BY " + strings.Join(orderParts, ", ")
 	}
+
+	limit := b.q.Limit
+	if limit == 0 {
+		limit = 500
+	}
+
+	var sql strings.Builder
+	sql.WriteString("SELECT ")
+	sql.WriteString(strings.Join(b.selects, ", "))
+	sql.WriteString(" FROM ")
+	sql.WriteString(b.datasetFromClause())
+	sql.WriteString(" WHERE ")
+	sql.WriteString(strings.Join(whereParts, " AND "))
+	sql.WriteString(orderClause)
 	sql.WriteString(" LIMIT ")
 	sql.WriteString(strconv.Itoa(limit))
 
@@ -97,7 +98,11 @@ func (b *builder) buildRaw() (Compiled, error) {
 // rawColumnsFor returns the UI-friendly column set for raw-rows mode on
 // each dataset. The column order is significant because the frontend maps
 // positional output into typed rows.
-func rawColumnsFor(d Dataset) ([]Column, []string) {
+//
+// `base` is the base table name, used to qualify the columns that also
+// exist on `resources` (service_name, attributes) so the expressions stay
+// unambiguous when the resources join is present.
+func rawColumnsFor(d Dataset, base string) ([]Column, []string) {
 	switch d {
 	case DatasetMetrics:
 		// Metrics are folded wide-events: one row per unique (time, label
@@ -112,9 +117,9 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 		}
 		exprs := []string{
 			"time_ns",
-			"service_name",
+			base + ".service_name",
 			"dataset",
-			"attributes",
+			base + ".attributes",
 		}
 		return cols, exprs
 	case DatasetLogs:
@@ -130,13 +135,13 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 		}
 		exprs := []string{
 			"time_ns",
-			"service_name",
+			base + ".service_name",
 			"severity_number",
 			"severity_text",
 			"body",
 			"hex(trace_id)",
 			"hex(span_id)",
-			"attributes",
+			base + ".attributes",
 		}
 		return cols, exprs
 	default: // DatasetSpans
@@ -157,7 +162,7 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 			"hex(trace_id)",
 			"hex(span_id)",
 			"hex(parent_span_id)",
-			"service_name",
+			base + ".service_name",
 			"name",
 			"span_kind",
 			"time_ns",
@@ -165,7 +170,7 @@ func rawColumnsFor(d Dataset) ([]Column, []string) {
 			"COALESCE(status_code, 0)",
 			// Keep in sync with the synthetic `error` field in realColumn().
 			`(status_code = 2 OR EXISTS (SELECT 1 FROM span_events se WHERE se.trace_id = events.trace_id AND se.span_id = events.span_id AND se.name = 'exception'))`,
-			"attributes",
+			base + ".attributes",
 		}
 		return cols, exprs
 	}
@@ -208,6 +213,11 @@ type builder struct {
 
 	groupKeys []string // aliases for GROUP BY fields (bucket_ns + each GROUP BY)
 	hasBucket bool
+	// joinResource is set by resolveField the first time a field falls
+	// through to attribute JSON, because such a field may be a resource
+	// attribute. It gates the resources join in datasetFromClause, so a
+	// query that only touches real columns emits no join at all.
+	joinResource bool
 }
 
 func newBuilder(q *Query) *builder { return &builder{q: q} }
@@ -218,7 +228,7 @@ func (b *builder) build() (Compiled, error) {
 		bucketNS := b.q.BucketMS * 1_000_000
 		timeCol := b.datasetTimeColumn()
 		expr := fmt.Sprintf("(%s / %d) * %d", timeCol, bucketNS, bucketNS)
-		b.addSelect(expr, "bucket_ns", "time")
+		b.addSelect(expr, "bucket_ns", "bucket_ns", "time")
 		b.groups = append(b.groups, expr)
 		b.groupKeys = append(b.groupKeys, "bucket_ns")
 		b.hasBucket = true
@@ -231,7 +241,9 @@ func (b *builder) build() (Compiled, error) {
 			return Compiled{}, err
 		}
 		alias := sanitizeAlias(g)
-		b.addSelect(sqlExpr.SQL, alias, sqlExpr.Type)
+		// Label is the field name as the user wrote it — `db.client.port`,
+		// not the SQL-safe `db_client_port` alias.
+		b.addSelect(sqlExpr.SQL, alias, g, sqlExpr.Type)
 		b.groups = append(b.groups, sqlExpr.SQL)
 		b.groupKeys = append(b.groupKeys, alias)
 	}
@@ -257,6 +269,20 @@ func (b *builder) build() (Compiled, error) {
 		whereParts = append(whereParts, clause)
 	}
 
+	// 5) HAVING and 6) ORDER BY are resolved before any SQL is assembled:
+	// resolving a field is what decides whether the FROM clause needs the
+	// resources join, and FROM is written first. Resolution order still
+	// matches the emitted placeholder order (WHERE, then HAVING — ORDER BY
+	// binds no arguments), so the args slice stays aligned.
+	havingClause, err := b.buildHavingSQL()
+	if err != nil {
+		return Compiled{}, err
+	}
+	orderClause, err := b.buildOrderBySQL()
+	if err != nil {
+		return Compiled{}, err
+	}
+
 	var sql strings.Builder
 	sql.WriteString("SELECT ")
 	sql.WriteString(strings.Join(b.selects, ", "))
@@ -269,16 +295,8 @@ func (b *builder) build() (Compiled, error) {
 		sql.WriteString(" GROUP BY ")
 		sql.WriteString(strings.Join(b.groups, ", "))
 	}
-
-	// 5) HAVING
-	if err := b.buildHavingSQL(&sql); err != nil {
-		return Compiled{}, err
-	}
-
-	// 6) ORDER BY
-	if err := b.buildOrderBySQL(&sql); err != nil {
-		return Compiled{}, err
-	}
+	sql.WriteString(havingClause)
+	sql.WriteString(orderClause)
 
 	// 7) LIMIT (default 1000 if unspecified; clamped at 10k by Validate)
 	limit := b.q.Limit
@@ -316,7 +334,7 @@ func (b *builder) buildAggregations() ([]RateSpec, error) {
 				alias = defaultAggAlias(a)
 			}
 			colIdx := len(b.cols)
-			b.addSelect(aggSQL, alias, "float")
+			b.addSelect(aggSQL, sanitizeAlias(alias), aggLabel(a), "float")
 			rates = append(rates, RateSpec{ColumnIndex: colIdx, BucketSecs: bucketSecs})
 			continue
 		}
@@ -328,29 +346,27 @@ func (b *builder) buildAggregations() ([]RateSpec, error) {
 		if alias == "" {
 			alias = defaultAggAlias(a)
 		}
-		b.addSelect(aggSQL, alias, aggType)
+		b.addSelect(aggSQL, sanitizeAlias(alias), aggLabel(a), aggType)
 	}
 	return rates, nil
 }
 
-func (b *builder) buildHavingSQL(sql *strings.Builder) error {
+func (b *builder) buildHavingSQL() (string, error) {
 	if len(b.q.Having) == 0 {
-		return nil
+		return "", nil
 	}
 	havingParts := make([]string, 0, len(b.q.Having))
 	for _, f := range b.q.Having {
 		clause, err := b.havingFilter(f)
 		if err != nil {
-			return err
+			return "", err
 		}
 		havingParts = append(havingParts, clause)
 	}
-	sql.WriteString(" HAVING ")
-	sql.WriteString(strings.Join(havingParts, " AND "))
-	return nil
+	return " HAVING " + strings.Join(havingParts, " AND "), nil
 }
 
-func (b *builder) buildOrderBySQL(sql *strings.Builder) error {
+func (b *builder) buildOrderBySQL() (string, error) {
 	orderParts := []string{}
 	if b.hasBucket {
 		// Time-bucketed queries must always order by time first so the
@@ -364,15 +380,14 @@ func (b *builder) buildOrderBySQL(sql *strings.Builder) error {
 		}
 		expr, err := b.resolveOrderField(o.Field)
 		if err != nil {
-			return err
+			return "", err
 		}
 		orderParts = append(orderParts, expr+" "+dir)
 	}
-	if len(orderParts) > 0 {
-		sql.WriteString(" ORDER BY ")
-		sql.WriteString(strings.Join(orderParts, ", "))
+	if len(orderParts) == 0 {
+		return "", nil
 	}
-	return nil
+	return " ORDER BY " + strings.Join(orderParts, ", "), nil
 }
 
 // resolvedField is the SQL expression + inferred value type for a user-facing
@@ -394,8 +409,21 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 	// We've already validated name against keyPattern, so no SQL injection via
 	// the path; use a literal to keep the expression deterministic.
 	path := fmt.Sprintf(`'$."%s"'`, name)
+	// An unknown key can be either a row attribute or a resource attribute
+	// (`service.version`, `host.name`, `deployment.environment`, …), and the
+	// user shouldn't have to know which: both resolve under the plain key.
+	//
+	// Precedence is row-first — the narrower scope shadows the envelope it
+	// was emitted under. That matches the flat field list the span-detail
+	// panel already renders, where a span's own `service.name` wins over the
+	// resource's. COALESCE short-circuits, so rows carrying the key
+	// themselves never touch the resource JSON. (A row attribute explicitly
+	// set to JSON null is indistinguishable from absent here and falls
+	// through to the resource value.)
+	b.joinResource = true
 	return resolvedField{
-		SQL:  fmt.Sprintf("json_extract(%s, %s)", b.attributesColumn(), path),
+		SQL: fmt.Sprintf("COALESCE(json_extract(%s, %s), json_extract(%s.attributes, %s))",
+			b.attributesColumn(), path, resourceAlias, path),
 		Type: "string",
 	}, nil
 }
@@ -410,7 +438,7 @@ func (b *builder) resolveField(name string) (resolvedField, error) {
 // signals — name, service.name, trace_id, http.route, etc. all live in the
 // same columns regardless of signal type.
 func (b *builder) realColumn(name string) (resolvedField, bool) {
-	if col, ok := commonRealColumn(name); ok {
+	if col, ok := b.commonRealColumn(name); ok {
 		return col, true
 	}
 	// Metric queries run against metric_events which doesn't have the
@@ -433,10 +461,12 @@ func (b *builder) realColumn(name string) (resolvedField, bool) {
 }
 
 // commonRealColumn resolves fields present on both events and metric_events.
-func commonRealColumn(name string) (resolvedField, bool) {
+// service_name is qualified because `resources` carries a column of the same
+// name; the rest are unique to the base table.
+func (b *builder) commonRealColumn(name string) (resolvedField, bool) {
 	switch name {
 	case "service.name":
-		return resolvedField{SQL: "service_name", Type: "string"}, true
+		return resolvedField{SQL: b.baseTable() + ".service_name", Type: "string"}, true
 	case "time_ns":
 		return resolvedField{SQL: "time_ns", Type: "time"}, true
 	case "meta.dataset", "dataset":
@@ -534,14 +564,38 @@ func (b *builder) signalTypeFilter() string {
 
 func (b *builder) datasetTimeColumn() string { return "time_ns" }
 
-func (b *builder) datasetFromClause() string {
+// resourceAlias is the alias the joined `resources` row goes by. Only the
+// resource-attribute fallthrough in resolveField references it.
+const resourceAlias = "res"
+
+// baseTable is the table the dataset's rows live in. Used to qualify the
+// three column names `resources` also defines — resource_id, service_name
+// and attributes — so those references stay unambiguous under the join.
+func (b *builder) baseTable() string {
 	if b.q.Dataset == DatasetMetrics {
 		return "metric_events"
 	}
 	return "events"
 }
 
-func (b *builder) attributesColumn() string { return "attributes" }
+func (b *builder) datasetFromClause() string {
+	base := b.baseTable()
+	if !b.joinResource {
+		return base
+	}
+	// Resource attributes live in one deduplicated row per resource identity,
+	// reachable from every event/metric row by resource_id — the table's
+	// INTEGER PRIMARY KEY, so this is a rowid seek into a table with as many
+	// rows as there are distinct processes reporting (tens, typically).
+	//
+	// LEFT, not INNER: retention deletes `resources` rows once unreferenced,
+	// and an INNER join would turn any such gap into silently missing events
+	// rather than a NULL resource attribute.
+	return base + " LEFT JOIN resources AS " + resourceAlias +
+		" ON " + resourceAlias + ".resource_id = " + base + ".resource_id"
+}
+
+func (b *builder) attributesColumn() string { return b.baseTable() + ".attributes" }
 
 func (b *builder) aggregation(a Aggregation) (string, string, error) {
 	if isPercentileOp(a.Op) {
@@ -589,10 +643,23 @@ func (b *builder) filter(f Filter) (string, error) {
 // havingFilter looks in the select-alias namespace first (that's the normal
 // case for HAVING) before falling back to a fresh field resolution.
 func (b *builder) havingFilter(f Filter) (string, error) {
-	if hasAlias(b.cols, f.Field) {
-		return b.clauseFor(f.Field, f)
+	if alias, ok := b.aliasRef(f.Field); ok {
+		return b.clauseFor(alias, f)
 	}
 	return b.filter(f)
+}
+
+// aliasRef matches a HAVING / ORDER BY reference against the SELECT output
+// aliases. Aliases are emitted SQL-safe, so a reference written the way the
+// user named it ("p95.duration") also matches its sanitized alias.
+func (b *builder) aliasRef(name string) (string, bool) {
+	if hasAlias(b.cols, name) {
+		return name, true
+	}
+	if s := sanitizeAlias(name); s != name && hasAlias(b.cols, s) {
+		return s, true
+	}
+	return "", false
 }
 
 func (b *builder) clauseFor(lhs string, f Filter) (string, error) {
@@ -640,8 +707,8 @@ func (b *builder) clauseFor(lhs string, f Filter) (string, error) {
 }
 
 func (b *builder) resolveOrderField(name string) (string, error) {
-	if hasAlias(b.cols, name) {
-		return name, nil
+	if alias, ok := b.aliasRef(name); ok {
+		return alias, nil
 	}
 	field, err := b.resolveField(name)
 	if err != nil {
@@ -652,9 +719,18 @@ func (b *builder) resolveOrderField(name string) (string, error) {
 
 // -----------------------------------------------------------------------------
 
-func (b *builder) addSelect(expr, alias, typ string) {
+// addSelect appends one output column. `alias` is the SQL-safe identifier the
+// column is keyed by everywhere downstream (GROUP BY splitting, HAVING and
+// ORDER BY references, the JSON response); `label` is the same column written
+// the way the user asked for it — a dotted attribute key or an aggregation
+// like "MAX(db.client.network.sent)" — and is display-only.
+func (b *builder) addSelect(expr, alias, label, typ string) {
 	b.selects = append(b.selects, fmt.Sprintf("%s AS %s", expr, alias))
-	b.cols = append(b.cols, Column{Name: alias, Type: typ})
+	col := Column{Name: alias, Type: typ}
+	if label != alias {
+		col.Label = label
+	}
+	b.cols = append(b.cols, col)
 }
 
 func hasAlias(cols []Column, name string) bool {
@@ -670,10 +746,21 @@ func defaultAggAlias(a Aggregation) string {
 	if a.Op == OpCount {
 		return "count"
 	}
-	if isRateOp(a.Op) {
-		return string(a.Op) + "_" + sanitizeAlias(a.Field)
-	}
 	return string(a.Op) + "_" + sanitizeAlias(a.Field)
+}
+
+// aggLabel renders an aggregation the way the user expressed it, so a header
+// can be read back into a query without translation: COUNT,
+// MAX(db.client.network.sent), P95(duration_ms). An explicit alias is the
+// user's own wording and is used verbatim.
+func aggLabel(a Aggregation) string {
+	if a.Alias != "" {
+		return a.Alias
+	}
+	if a.Op == OpCount {
+		return "COUNT"
+	}
+	return strings.ToUpper(string(a.Op)) + "(" + a.Field + ")"
 }
 
 // sanitizeAlias turns user-provided field names into SQL-safe column aliases.

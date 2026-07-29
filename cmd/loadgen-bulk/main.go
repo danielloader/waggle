@@ -154,6 +154,13 @@ func main() {
 	for si, svc := range serviceNames {
 		for inst := range numInstances {
 			id := uint64(si*numInstances + inst + 1)
+			// deploy.runtime varies per instance so a resource-attribute
+			// group-by has real cardinality to split on, the way a service
+			// running in more than one place does.
+			runtime := "server"
+			if inst%2 == 1 {
+				runtime = "job"
+			}
 			resources = append(resources, store.Resource{
 				ID:                id,
 				ServiceName:       svc,
@@ -163,9 +170,10 @@ func main() {
 				SDKName:           "opentelemetry",
 				SDKLanguage:       "go",
 				SDKVersion:        "1.26.0",
-				AttributesJSON:    `{"deployment.environment":"production"}`,
-				FirstSeenNS:       now.UnixNano() - windowNS,
-				LastSeenNS:        now.UnixNano(),
+				AttributesJSON: `{"deployment.environment":"production",` +
+					`"deploy.runtime":"` + runtime + `"}`,
+				FirstSeenNS: now.UnixNano() - windowNS,
+				LastSeenNS:  now.UnixNano(),
 			})
 		}
 	}

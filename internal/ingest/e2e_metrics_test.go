@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 )
 
-func (f *e2eFixture) meterProvider(service string) *sdkmetric.MeterProvider {
+func (f *e2eFixture) meterProvider(service string, extra ...attribute.KeyValue) *sdkmetric.MeterProvider {
 	f.t.Helper()
 	exp, err := otlpmetrichttp.New(f.ctx,
 		otlpmetrichttp.WithEndpoint(f.endpointHost()),
@@ -34,11 +34,11 @@ func (f *e2eFixture) meterProvider(service string) *sdkmetric.MeterProvider {
 	if err != nil {
 		f.t.Fatalf("otlpmetrichttp.New: %v", err)
 	}
-	res, err := resource.New(f.ctx, resource.WithAttributes(
+	res, err := resource.New(f.ctx, resource.WithAttributes(append([]semattr.KeyValue{
 		semattr.String("service.name", service),
 		semattr.String("service.version", "e2e-test"),
 		semattr.String("deployment.environment", "test"),
-	))
+	}, extra...)...))
 	if err != nil {
 		f.t.Fatalf("resource.New: %v", err)
 	}

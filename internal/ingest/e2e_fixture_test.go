@@ -103,8 +103,10 @@ func (f *e2eFixture) apiURL(path string) string {
 
 // tracerProvider builds a fresh OTel TracerProvider pointing at this
 // fixture's ingest endpoint, tagged with the given service.name. Short
-// batch timeout keeps test runtime low.
-func (f *e2eFixture) tracerProvider(service string) *sdktrace.TracerProvider {
+// batch timeout keeps test runtime low. `extra` adds resource attributes
+// beyond the defaults, so a test can emit two resources that differ only
+// in one attribute.
+func (f *e2eFixture) tracerProvider(service string, extra ...attribute.KeyValue) *sdktrace.TracerProvider {
 	f.t.Helper()
 	exp, err := otlptracehttp.New(f.ctx,
 		otlptracehttp.WithEndpoint(f.endpointHost()),
@@ -113,11 +115,11 @@ func (f *e2eFixture) tracerProvider(service string) *sdktrace.TracerProvider {
 	if err != nil {
 		f.t.Fatalf("otlptracehttp.New: %v", err)
 	}
-	res, err := resource.New(f.ctx, resource.WithAttributes(
+	res, err := resource.New(f.ctx, resource.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("service.name", service),
 		attribute.String("service.version", "e2e-test"),
 		attribute.String("deployment.environment", "test"),
-	))
+	}, extra...)...))
 	if err != nil {
 		f.t.Fatalf("resource.New: %v", err)
 	}
@@ -131,7 +133,7 @@ func (f *e2eFixture) tracerProvider(service string) *sdktrace.TracerProvider {
 }
 
 // loggerProvider is the log-side counterpart to tracerProvider.
-func (f *e2eFixture) loggerProvider(service string) *sdklog.LoggerProvider {
+func (f *e2eFixture) loggerProvider(service string, extra ...attribute.KeyValue) *sdklog.LoggerProvider {
 	f.t.Helper()
 	exp, err := otlploghttp.New(f.ctx,
 		otlploghttp.WithEndpoint(f.endpointHost()),
@@ -140,11 +142,11 @@ func (f *e2eFixture) loggerProvider(service string) *sdklog.LoggerProvider {
 	if err != nil {
 		f.t.Fatalf("otlploghttp.New: %v", err)
 	}
-	res, err := resource.New(f.ctx, resource.WithAttributes(
+	res, err := resource.New(f.ctx, resource.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("service.name", service),
 		attribute.String("service.version", "e2e-test"),
 		attribute.String("deployment.environment", "test"),
-	))
+	}, extra...)...))
 	if err != nil {
 		f.t.Fatalf("resource.New: %v", err)
 	}
@@ -274,7 +276,11 @@ func (f *e2eFixture) postJSON(path string, body any, out any) error {
 type apiQueryResult struct {
 	Columns []struct {
 		Name string `json:"name"`
-		Type string `json:"type"`
+		// Label is the column as the user expressed it (dotted attribute
+		// key, or "MAX(db.client.network.sent)"); empty for built-in
+		// snake_case columns.
+		Label string `json:"label"`
+		Type  string `json:"type"`
 	} `json:"columns"`
 	Rows [][]any `json:"rows"`
 }
