@@ -22,6 +22,28 @@ export function datasetLabel(d: Dataset): string {
   }
 }
 
+// The signal_type the API expects for a dataset. The names differ by design —
+// datasets are plural (the UI's tabs), signal_type is singular (the stored
+// per-row discriminator) — and /api/fields REJECTS the plural form, so the
+// translation has to happen somewhere.
+//
+// It lives here because it was previously open-coded at each call site, and the
+// third copy got it wrong: a two-way `dataset === "spans" ? "span" : "log"`
+// mapped metrics to the LOG catalogue, so the group-by picker offered log
+// fields for a metrics query and no metric attribute could be grouped by.
+// Exhaustive over Dataset, so adding a dataset is a type error here rather than
+// a silently wrong signal at three call sites.
+export function datasetSignal(d: Dataset): "span" | "log" | "metric" {
+  switch (d) {
+    case "spans":
+      return "span";
+    case "logs":
+      return "log";
+    case "metrics":
+      return "metric";
+  }
+}
+
 export const AGG_OPS = [
   "count",
   "count_field",

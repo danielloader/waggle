@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type FieldInfo } from "../../lib/api";
-import { BOOLEAN_META_FIELDS, type Dataset, type Filter } from "../../lib/query";
+import {
+  BOOLEAN_META_FIELDS,
+  type Dataset,
+  datasetSignal,
+  type Filter,
+} from "../../lib/query";
 import {
   applySuggestion,
   FILTER_OP_DISPLAY,
@@ -58,8 +63,7 @@ export function FilterInput({
   }, []);
 
   const parsed = useMemo(() => parseFilter(text), [text]);
-  const signal =
-    dataset === "spans" ? "span" : dataset === "logs" ? "log" : "metric";
+  const signal = datasetSignal(dataset);
 
   // Debounce only the prefix. The field/phase flip immediately so the
   // dropdown contents switch at once; only the prefix-filtered fetch
