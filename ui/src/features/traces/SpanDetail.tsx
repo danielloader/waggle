@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ChevronRight, ExternalLink } from "lucide-react";
 import { api, HttpError, type SpanOut, type TraceDetail, type TraceResource } from "../../lib/api";
 import { serviceColor } from "../../lib/colors";
 import { formatDuration } from "../../lib/format";
@@ -11,7 +11,7 @@ import {
   AttributesPanel,
   compareByKey,
   detectType,
-  formatValue,
+  InlineAttrList,
   parseAttributes,
   type AttrRow,
 } from "../../components/ui/AttributesPanel";
@@ -338,34 +338,69 @@ function EventsTab({
   }
 
   return (
-    <div className="p-3 flex flex-col gap-3">
+    <div className="p-3 flex flex-col gap-1.5">
       {events.map((ev, i) => (
-        <button
+        <EventListItem
           key={i}
-          type="button"
+          event={ev}
+          offsetNs={ev.time_ns - span.start_ns}
           onClick={() => setIdx(i)}
-          className="text-left border rounded overflow-hidden hover:bg-[var(--color-card-hover)]"
-          style={{
-            borderColor: "var(--color-border)",
-            background: "var(--color-surface)",
-          }}
-        >
-          <div
-            className="px-3 py-1.5 text-sm font-medium border-b flex justify-between"
-            style={{ borderColor: "var(--color-border)" }}
-          >
-            <span>{ev.name}</span>
-            <span
-              className="text-xs font-mono"
-              style={{ color: "var(--color-ink-muted)" }}
-            >
-              +{formatDuration(ev.time_ns - span.start_ns)}
-            </span>
-          </div>
-          <EventAttrs json={ev.attributes} />
-        </button>
+        />
       ))}
     </div>
+  );
+}
+
+/**
+ * One row of the events master list — name, offset from span start, and
+ * how many attributes are waiting behind the click. The attributes
+ * themselves are deliberately not previewed: this panel is 420px wide and
+ * a span routinely carries several events with a dozen attributes each,
+ * so an inline dump is both unreadable and long enough to bury the later
+ * events.
+ */
+function EventListItem({
+  event,
+  offsetNs,
+  onClick,
+}: {
+  event: NonNullable<SpanOut["events"]>[number];
+  offsetNs: number;
+  onClick: () => void;
+}) {
+  const count = useMemo(
+    () => parseAttributes(event.attributes).length,
+    [event.attributes],
+  );
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-left border rounded px-3 py-2 flex items-center gap-2 hover:bg-[var(--color-card-hover)]"
+      style={{
+        borderColor: "var(--color-border)",
+        background: "var(--color-surface)",
+      }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium break-words">{event.name}</div>
+        <div className="text-[11px]" style={{ color: "var(--color-ink-muted)" }}>
+          {count === 0
+            ? "no attributes"
+            : `${count} attribute${count === 1 ? "" : "s"}`}
+        </div>
+      </div>
+      <span
+        className="text-xs font-mono shrink-0"
+        style={{ color: "var(--color-ink-muted)" }}
+      >
+        +{formatDuration(offsetNs)}
+      </span>
+      <ChevronRight
+        className="w-3.5 h-3.5 shrink-0"
+        style={{ color: "var(--color-ink-muted)" }}
+      />
+    </button>
   );
 }
 
@@ -444,29 +479,6 @@ function EventDetail({
   );
 }
 
-function EventAttrs({ json }: { json: string }) {
-  const rows = useMemo(() => parseAttributes(json), [json]);
-  if (rows.length === 0) {
-    return (
-      <div className="px-3 py-2 text-xs" style={{ color: "var(--color-ink-muted)" }}>
-        No attributes
-      </div>
-    );
-  }
-  return (
-    <div className="px-3 py-2 flex flex-col gap-1">
-      {rows.map((r) => (
-        <div key={r.key} className="flex gap-3 text-xs font-mono">
-          <span className="shrink-0" style={{ width: 140, color: "var(--color-ink-muted)" }}>
-            {r.key}
-          </span>
-          <span className="break-all whitespace-pre-wrap">{formatValue(r.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Links tab
 // ---------------------------------------------------------------------------
@@ -512,17 +524,7 @@ function LinksTab({ span }: { span: SpanOut }) {
             </Link>
             {linkedAttrs.length > 0 && (
               <div className="px-3 py-2">
-                {linkedAttrs.map((r) => (
-                  <div key={r.key} className="flex gap-3 text-xs font-mono">
-                    <span
-                      className="shrink-0"
-                      style={{ width: 140, color: "var(--color-ink-muted)" }}
-                    >
-                      {r.key}
-                    </span>
-                    <span className="break-all">{formatValue(r.value)}</span>
-                  </div>
-                ))}
+                <InlineAttrList rows={linkedAttrs} />
               </div>
             )}
           </div>
