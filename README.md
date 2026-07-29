@@ -127,7 +127,7 @@ declines within that view.
 
 ```sh
 brew install danielloader/tap/waggle
-brew services start waggle   # optional: run as a LaunchAgent
+waggle
 ```
 
 **Binary** — grab a release archive from
@@ -139,11 +139,10 @@ brew services start waggle   # optional: run as a LaunchAgent
 
 **Linux packages** — `.deb`, `.rpm`, `.apk`, and Arch `.pkg.tar.zst` are
 attached to each [release](https://github.com/danielloader/waggle/releases)
-(amd64 + arm64). They install the binary to `/usr/bin/waggle`, drop a
-systemd unit at `/lib/systemd/system/waggle.service`, create a `waggle`
-system user, and start the service on install. State lives under
-`/var/lib/waggle/`. Packages are **unsigned**, so some installers want an
-explicit "allow untrusted" flag:
+(amd64 + arm64). They install the binary to `/usr/bin/waggle` and nothing
+else — no service, no system user; you run `waggle` yourself and it keeps
+its database under your own user-data directory. Packages are
+**unsigned**, so some installers want an explicit "allow untrusted" flag:
 
 ```sh
 # Debian / Ubuntu
@@ -158,7 +157,7 @@ sudo apk add --allow-untrusted waggle_*_x86_64.apk
 # Arch
 sudo pacman -U waggle-*-x86_64.pkg.tar.zst
 
-systemctl status waggle                # confirm the service started
+waggle                                 # run it
 ```
 
 **Docker** — images are published to GitHub Container Registry:
@@ -300,24 +299,6 @@ relative `{"last":"1h"}` as well as absolute bounds, and results are capped
 per-tool (a truncated result says so) to keep an agent's context bounded.
 Full tool reference on the
 [MCP Server wiki page](https://github.com/danielloader/waggle/wiki/MCP-Server).
-
-### Run as a background service
-
-Waggle is service-aware when installed via a package manager — the
-single-binary download is meant to be run in the foreground.
-
-- **macOS (Homebrew formula):** `brew services start waggle` runs waggle as a
-  LaunchAgent. Logs go to `$(brew --prefix)/var/log/waggle.log`. Stop with
-  `brew services stop waggle`; restart after upgrade with `brew services restart waggle`.
-- **Linux (`.deb` / `.rpm` / `.apk` / Arch):** the package ships
-  `/lib/systemd/system/waggle.service` and creates a `waggle` system user.
-  The postinstall enables and starts the service on first install, and
-  restarts it after an upgrade. Manage it with the usual
-  `systemctl status|restart|stop waggle`. State lives at `/var/lib/waggle/`.
-
-The standalone binary, Docker image, and the snap-shot of waggle you build
-yourself have no service integration — start them however you'd start any
-other foreground process.
 
 ### Query model
 
