@@ -7,6 +7,7 @@ import {
   type Aggregation,
   type AggOp,
   type Dataset,
+  datasetSignal,
 } from "../../lib/query";
 
 interface Props {
@@ -110,8 +111,7 @@ function FieldAutocomplete({
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const signal =
-    dataset === "spans" ? "span" : dataset === "logs" ? "log" : "metric";
+  const signal = datasetSignal(dataset);
 
   const fields = useQuery({
     queryKey: ["fields", signal, service, value],

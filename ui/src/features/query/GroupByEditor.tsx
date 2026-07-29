@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import type { Dataset } from "../../lib/query";
+import { datasetSignal, type Dataset } from "../../lib/query";
 import { api, type FieldInfo } from "../../lib/api";
 
 interface Props {
@@ -18,7 +18,7 @@ interface Props {
  */
 export function GroupByEditor({ dataset, service, groupBy, onChange }: Props) {
   const [q, setQ] = useState("");
-  const signal = dataset === "spans" ? "span" : "log";
+  const signal = datasetSignal(dataset);
   const fields = useQuery({
     queryKey: ["fields", signal, service, q],
     queryFn: ({ signal: abort }) => {
