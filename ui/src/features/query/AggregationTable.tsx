@@ -1,4 +1,4 @@
-import type { QueryResult } from "../../lib/query";
+import { columnHeader, type QueryResult } from "../../lib/query";
 
 interface Props {
   result: QueryResult | undefined;
@@ -47,9 +47,9 @@ export function AggregationTable({ result, loading }: Props) {
         >
           <tr>
             {groupIdxs.map((i) => (
-              <Th key={i}>{result.columns[i].name}</Th>
+              <Th key={i}>{columnHeader(result.columns[i])}</Th>
             ))}
-            <Th>{result.columns[aggIdx].name}</Th>
+            <Th>{columnHeader(result.columns[aggIdx])}</Th>
           </tr>
         </thead>
         <tbody>
@@ -80,7 +80,7 @@ function EmptyState({ children }: { children: React.ReactNode }) {
 function Th({ children }: { children: React.ReactNode }) {
   return (
     <th
-      className="px-4 py-2 border-b font-medium uppercase tracking-wide"
+      className="px-4 py-2 border-b font-medium tracking-wide font-mono"
       style={{ borderColor: "var(--color-border)" }}
     >
       {children}
